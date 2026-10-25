@@ -9,6 +9,8 @@ build-*/
 games/emerald_adult/build/
 games/emerald_adult/local/
 games/emerald_adult/symbols/
+games/emerald_adult/generated/
+games/emerald_adult/generated_bios/
 
 # Generated code (derivative of copyrighted BIOS / ROM; regenerate locally)
 **/generated/*.c

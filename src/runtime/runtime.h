@@ -51,6 +51,14 @@ struct RunOptions {
     const char*   builtin_game_name = nullptr;
     const char*   builtin_rom_sha1  = nullptr;
     std::uint32_t builtin_rom_crc32 = 0;
+    // Per-game configuration is owned by the launcher executable. Passing it
+    // here avoids relying on the working directory or a runtime-library build
+    // definition when this runner is embedded as a CMake subdirectory.
+    const char* default_game_config_path = nullptr;
+    // Titles whose generated code is tied to exact source images can reject
+    // hash mismatches instead of allowing an uncatalogued revision to boot.
+    bool strict_bios_sha1 = false;
+    bool strict_rom_sha1 = false;
 
     // Non-null opts this game into the data-only .gbamod package catalog.
     // Packages target this stable ID plus builtin_rom_sha1 and may activate

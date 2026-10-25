@@ -1385,6 +1385,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     g_runtime_bus_read_override = nullptr;
     Args args;
 
+    if (opts.default_game_config_path && *opts.default_game_config_path) {
+        args.config = opts.default_game_config_path;
+    }
+
     // Seed built-in defaults from the caller (the per-game runner).
     // CLI / TOML can still override these.
     if (opts.builtin_game_name && *opts.builtin_game_name) {
@@ -1483,6 +1487,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                                 ? gba::GbaBios::kExpectedSha1
                                 : args.bios_sha1.c_str();
         spec.expected_crc32 = args.bios_crc32;
+        spec.hash_mismatch_is_error = opts.strict_bios_sha1;
         auto r = resolve_asset(args.bios, spec, argv[0]);
         if (!r.ok) {
             std::fprintf(stderr,
@@ -1514,6 +1519,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         spec.expected_size  = 0;  // GBA ROMs vary in size; SHA-1 covers it
         spec.expected_sha1  = args.rom_sha1.c_str();
         spec.expected_crc32 = args.rom_crc32;
+        spec.hash_mismatch_is_error = opts.strict_rom_sha1;
         auto r = resolve_asset(args.rom, spec, argv[0]);
         if (!r.ok) {
             std::fprintf(stderr,

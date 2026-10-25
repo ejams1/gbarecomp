@@ -70,9 +70,15 @@ The first range stops before executable `lib_text` at `0x08334438`; the
 four-byte linker alignment gap stays unclassified. The 1,404 map input sections were examined as a cross-check;
 the map was not selected because the section table already provided a direct
 code/data split. Mapping symbols report 16,022 fine-grained data regions,
-including in-function literal pools, but were not selected because the ELF
-section flags are already authoritative for the coarse ROM split. No address
-classification was inferred from symbol names.
+including in-function literal pools. No address classification was inferred
+from symbol names.
+
+M0-4 tested the mapping-symbol overlay against the complete ROM. The generator
+rejected it with 114 control-flow targets inside `$d` ranges, including
+`0x08011D60` reached from `MgbaAssert`. These conflicts need instruction-level
+review before changing the classification; M0-4 therefore uses the two
+section-derived ranges above and records the mapping result as an unresolved
+coverage limit.
 
 The import produced 17,097 function seeds: 52 ARM and 17,045 Thumb. All names
 were meaningful; zero function seeds overlapped the selected data ranges, so
@@ -88,14 +94,14 @@ Representative symbol-to-seed checks:
 | `VBlankIntr` | `0x08000795 FUNC` | `0x08000794 thumb` | The odd ELF value is normalized to an even code address with Thumb mode preserved. |
 | `HBlankIntr` | `0x08000865 FUNC` | `0x08000864 thumb` | Same ELF/seed mode normalization. |
 | `SerialIntr` | `0x080008C9 FUNC` | `0x080008C8 thumb` | Same ELF/seed mode normalization. |
-| `IntrMain` | `0x08000250 NOTYPE` | not imported as a function | The ARM disassembly at `0x08000250` reads pending IRQ bits and branches indirectly through `gIntrTable` (`0x030019B4`); `IntrMain_Buffer` is separately at `0x030019F0`. It is an interrupt dispatch root but not `STT_FUNC`; M0-4 must add it as a reviewed explicit seed if static discovery does not reach it. |
+| `IntrMain` | `0x08000250 NOTYPE` | explicit ARM root in `emerald.toml` | The ARM disassembly at `0x08000250` reads pending IRQ bits and branches indirectly through `gIntrTable` (`0x030019B4`); `IntrMain_Buffer` is separately at `0x030019F0`. It is an interrupt dispatch root but not `STT_FUNC`, so M0-4 added it as a reviewed explicit seed. |
 
 The checked map and symbol table contain no `STT_FUNC` entries in EWRAM or
 IWRAM. Their RAM sections are `NOBITS`; this build provides no evidenced
 source/destination code-copy pair for the importer's `--code-copy-pair` option.
 Accordingly, the importer emitted no code-copy annotation rather than guessing
-that any RAM-resident data is executable. M0-4 must revisit this if its
-generator or disassembly establishes a copied-code range.
+that any RAM-resident data is executable. M0-4's generation found no evidence
+that warrants changing that classification.
 
 ## Generated files
 
