@@ -9,8 +9,29 @@ if(NOT EXISTS "${GBARECOMP_ROOT}/CMakeLists.txt")
         "-DGBARECOMP_ROOT=<path-to-gbarecomp>.")
 endif()
 
-# M0-3 intentionally builds only the host shell. No ROM, BIOS, generated
-# cartridge code, or CLI-generated project directory is needed yet.
+set(GBARECOMP_GENERATED_BIOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_bios"
+    CACHE PATH "Directory containing this game's generated BIOS sources")
+set(_bios_cpp "${GBARECOMP_GENERATED_BIOS_DIR}/bios_recompiled.cpp")
+set(_bios_dispatch "${GBARECOMP_GENERATED_BIOS_DIR}/bios_dispatch_table.cpp")
+if(NOT EXISTS "${_bios_cpp}" OR NOT EXISTS "${_bios_dispatch}")
+    message(FATAL_ERROR
+        "Generated BIOS sources are missing from '${GBARECOMP_GENERATED_BIOS_DIR}'. "
+        "Run gba_recompile --bios with bios/gba_bios.toml before configuring the host.")
+endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml")
+    message(FATAL_ERROR
+        "Hand-maintained emerald.toml is missing; it pins the ROM, BIOS, save "
+        "configuration, entry root, and identity.")
+endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/symbols/POKEMON_MODERN_EMERALD_symbols.toml")
+    message(FATAL_ERROR
+        "Imported fork symbols are missing. Run tools/import-symbols.ps1 "
+        "against the pinned ROM/ELF/map before generation.")
+endif()
+
+# The recompiler CLI is bootstrapped separately before this game project is
+# configured. This host build consumes generated BIOS and cartridge files from
+# separate, ignored output directories.
 add_subdirectory("${GBARECOMP_ROOT}" "${CMAKE_BINARY_DIR}/gbarecomp")
 
 get_target_property(_runtime_compile_definitions gbarecomp_runtime
@@ -55,9 +76,25 @@ if(NOT "${_sdl_MAJOR}.${_sdl_MINOR}.${_sdl_PATCH}" STREQUAL "2.30.11")
         "or correct GBARECOMP_MINGW_PREFIX_UNIX.")
 endif()
 
-add_executable(EmeraldAdultHost
-    src/empty_dispatch_table.cpp
-    src/main.cpp)
+include("${CMAKE_BINARY_DIR}/gbarecomp/runtime.cmake")
+gbarecomp_add_runtime_target(EmeraldAdultHost
+    GAME_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated"
+    DEBUG_PORT 19842
+    WINDOW_TITLE "Pokemon Modern Emerald"
+    DEFAULT_GAME_CONFIG_PATH "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml")
+# The framework archive contains runtime_arm.cpp (which references the BIOS
+# dispatch table) and generated BIOS translation units. Attach the generated
+# BIOS objects directly to the executable so their definitions are available
+# before the static runtime archives are scanned by traditional linkers.
+target_sources(EmeraldAdultHost PRIVATE
+    src/main.cpp
+    "${_bios_cpp}"
+    "${_bios_dispatch}")
+
+# The shared helper currently wires executable shards, the dispatch table,
+# and PC symbols. Include the optional data-name table emitted for --data-symbols.
+set(_data_symbol_map "${CMAKE_CURRENT_SOURCE_DIR}/generated/data_symbol_map.cpp")
+if(EXISTS "${_data_symbol_map}")
+    target_sources(EmeraldAdultHost PRIVATE "${_data_symbol_map}")
+endif()
 target_compile_features(EmeraldAdultHost PRIVATE cxx_std_20)
-target_link_libraries(EmeraldAdultHost PRIVATE gbarecomp_runtime)
-target_include_directories(EmeraldAdultHost PRIVATE "${GBARECOMP_ROOT}/src")

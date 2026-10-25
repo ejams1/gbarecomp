@@ -1,14 +1,18 @@
 # Pokemon Modern Emerald host scaffold
 
-This is a window-lifecycle stub for the optional native host. It opens an SDL2
-window and exits when the window is closed. `--window-smoke` opens and closes
-the window immediately to check initialization and cleanup. **Cartridge
-execution is not implemented until M0-4.** This target does not compile or link
-generated game code.
+This host recompiles the verified Modern Emerald ROM and runs it through the
+shared gbarecomp runtime. Its `--window-smoke` option opens and closes the SDL2
+window without booting the game. The default launch reads the hand-maintained
+`emerald.toml`, verifies the ROM/BIOS identities, and uses the configured
+Flash1M save. RTC support is auto-detected from the cartridge's Seiko SDK
+signature; set `RECOMP_RTC_EPOCH` only for deterministic development runs.
 
 ## Pinned inputs
 
-- Framework: workspace `gbarecomp` commit `8bab64e` (M0-2 integration study).
+- Framework generation CLI source: workspace `gbarecomp` commit
+  `c96bded93d5a39f0e8707a53e2fae96ac42452f2` (M0-4a); its verified binary
+  SHA-256 is `3ba3a74d859f20c21c2c6f91bd213b90350a3d9843c47db28b228734f530e716`.
+  The host runtime includes M0-4's ABI 7 overlay callback fix.
 - SDL: 2.30.11, upstream commit
   `fa24d868ac2f8fd558e4e914c9863411245db8fd`.
 - CMake: 3.20 or newer; C++20 compiler and Ninja are required by the framework.
@@ -41,48 +45,128 @@ the exact gitlink recorded by the checked-out framework commit.
 
 ## Configure and build
 
-Run these commands from `gbarecomp/games/emerald_adult` in PowerShell:
+First build the recompiler CLI from the `gbarecomp` root:
+
+```powershell
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target gba_recompile --parallel
+```
+
+Build `pokeemerald_modern.gba`, `.elf`, and `.map` together with `make modern`
+in the pinned game Docker image. Then from the workspace root run:
+
+```powershell
+./gbarecomp/games/emerald_adult/tools/import-symbols.ps1
+```
+
+Generate the BIOS and cartridge code with the CLI from `gbarecomp`:
+
+```powershell
+$engineRoot = (Resolve-Path ./gbarecomp).Path
+$hostRoot = Join-Path $engineRoot "games/emerald_adult"
+$recompiler = Join-Path $engineRoot "build/gba_recompile.exe"
+& $recompiler --bios (Join-Path $engineRoot "bios/gba_bios.bin") `
+  --config (Join-Path $engineRoot "bios/gba_bios.toml") `
+  --out (Join-Path $hostRoot "generated_bios")
+& $recompiler --rom (Join-Path (Resolve-Path ./pokeemerald-modern-adult) "pokeemerald_modern.gba") `
+  --symbols (Join-Path $hostRoot "symbols/imported_symbols.tsv") `
+  --data-symbols (Join-Path $hostRoot "symbols/imported_data_symbols.tsv") `
+  --config (Join-Path $hostRoot "emerald.toml") `
+  --config (Join-Path $hostRoot "symbols/POKEMON_MODERN_EMERALD_symbols.toml") `
+  --out (Join-Path $hostRoot "generated")
+```
+
+Then configure and build the host from `gbarecomp/games/emerald_adult`:
 
 ```powershell
 cmake -S . -B build -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
-  "-DCMAKE_TOOLCHAIN_FILE=../../cmake/toolchains/clang-mingw.cmake"
+  "-DCMAKE_TOOLCHAIN_FILE=../../cmake/toolchains/clang-mingw.cmake" `
+  "-DGBARECOMP_GENERATED_BIOS_DIR=${PWD}/generated_bios"
 cmake --build build --target EmeraldAdultHost --parallel
 ```
 
-Open the stub window with `build/EmeraldAdultHost.exe`; run
-`build/EmeraldAdultHost.exe --window-smoke` for a short open/close lifecycle
-check. A graphical desktop session is needed for the visible-window check.
-The window-only target links `src/empty_dispatch_table.cpp` because the shared
-runtime expects dispatch symbols even when no cartridge is linked. Its zero
-entry count deliberately makes game execution impossible; M0-4 will switch
-the executable to generated cartridge dispatch output.
+The host fails configuration when BIOS, cartridge shards, or imported identity
+metadata are missing. This game runner enforces the configured BIOS and ROM
+SHA-1 values; missing files and hash mismatches stop startup with a specific
+diagnostic. The generated directories stay ignored. CMake links sharded
+cartridge code, BIOS translation and the data symbol map when present.
 
-## Docker build and headless lifecycle check
+## Generation record and observed coverage
 
-The pinned Linux image supplies CMake, Ninja, a C++ compiler, and SDL2 2.30.11
-with dummy video/audio drivers. From the `gbarecomp` root:
+The checked-in `emerald.toml` pins ROM SHA-1
+`57d3561262bf5337293a2d31f6b79b5879f7cff7`, BIOS SHA-1
+`300c20df6731a33952ded8c436f7f186d25d3492`, the explicit ARM `IntrMain` root,
+Flash1M saves (128 KiB), and real BIOS execution. RTC is detected from the
+cartridge's Seiko SDK signature; `RECOMP_RTC_EPOCH` fixes it for repeatable
+development runs.
+
+With the section-based M0-4a overlay and verified CLI above, generation
+produced 735 BIOS functions and 119,231 cartridge functions (354 ARM, 118,877
+Thumb), in 64 adaptive shards. The generator found 63,639 indirect entries and
+538,628 branch targets, kept 19,291 of 150,845 speculative literal seeds, and
+honored the two ELF section-derived data ranges. It emitted 33,228 named data
+symbols and no code-copy annotations. Cartridge output is about 888 MB under
+`generated/`; BIOS output is under `generated_bios/`. The 14,609-range mapping
+symbol overlay was also evaluated, but generation correctly rejected it after
+finding 114 control-flow targets inside `$d` ranges (including `0x08011D60`
+from `MgbaAssert`). It is not used until those code/data conflicts are resolved.
+
+The checked-in `tools/title-start.input.csv` replays the verified cold-start
+Start presses. The headless host completed 780 frames and displayed the New
+Game/Option title menu. The verified capture SHA-256 is
+`89b3a8e244d9918144a1de8be306a4a313df23350d33e039971c3ccdea773960`. The run
+reported 26 healed native entries and 22 dispatch misses handled by the enabled
+interpreter bridge; it did not claim full static coverage. Screenshot and full
+runtime logs are local ignored artifacts.
+
+## Docker build, generation and title-menu check
+
+The pinned Linux image supplies CMake, Ninja, Clang 14.0.6, and SDL2 2.30.11
+with dummy video/audio drivers. From the workspace root, build the image and
+the recompiler CLI:
 
 ```powershell
+$workspace = (Get-Location).Path
+Push-Location ./gbarecomp
 docker build -f games/emerald_adult/Dockerfile -t emerald-adult-host-build .
-docker run --rm -v "${PWD}:/workspace" -w /workspace/games/emerald_adult `
-  emerald-adult-host-build sh -lc `
-  'cmake -S . -B build-docker-clang -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build build-docker-clang --target EmeraldAdultHost --parallel && SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./build-docker-clang/EmeraldAdultHost --window-smoke'
+Pop-Location
+docker run --rm -v "${workspace}:/workspace" -w /workspace/gbarecomp `
+  emerald-adult-host-build bash -lc `
+  'cmake -S . -B build-docker-cli -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build build-docker-cli --target gba_recompile --parallel 8'
 ```
 
-The Docker check validates SDL window creation and teardown without a desktop;
-it does not replace checking the visible Windows window with the Windows
-toolchain above.
+Generate the BIOS and ROM into separate ignored output directories:
+
+```powershell
+docker run --rm -v "${workspace}:/workspace" -w /workspace/gbarecomp `
+  emerald-adult-host-build bash -lc `
+  './build-docker-cli/gba_recompile --bios /workspace/gbarecomp/bios/gba_bios.bin --config /workspace/gbarecomp/bios/gba_bios.toml --out /workspace/gbarecomp/games/emerald_adult/generated_bios && ./build-docker-cli/gba_recompile --rom /workspace/pokeemerald-modern-adult/pokeemerald_modern.gba --symbols /workspace/gbarecomp/games/emerald_adult/symbols/imported_symbols.tsv --data-symbols /workspace/gbarecomp/games/emerald_adult/symbols/imported_data_symbols.tsv --config /workspace/gbarecomp/games/emerald_adult/emerald.toml --config /workspace/gbarecomp/games/emerald_adult/symbols/POKEMON_MODERN_EMERALD_symbols.toml --out /workspace/gbarecomp/games/emerald_adult/generated'
+```
+
+Configure, build, and run the deterministic title-menu route. The run uses an
+isolated `/tmp` save and writes an ignored PNG for visual inspection:
+
+```powershell
+docker run --rm -v "${workspace}:/workspace" -w /workspace/gbarecomp/games/emerald_adult `
+  emerald-adult-host-build bash -lc `
+  'cmake -S . -B build-docker-m0-4 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DGBARECOMP_GENERATED_BIOS_DIR=/workspace/gbarecomp/games/emerald_adult/generated_bios && cmake --build build-docker-m0-4 --target EmeraldAdultHost --parallel 8 && RECOMP_RTC_EPOCH=946684800 GBARECOMP_INPUT_REPLAY=/workspace/gbarecomp/games/emerald_adult/tools/title-start.input.csv SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./build-docker-m0-4/EmeraldAdultHost --no-window --frames 780 --save /tmp/emerald-adult-m0-4.sav --dump-png /workspace/gbarecomp/games/emerald_adult/host-title.png'
+```
+
+The first cold-start route may populate the local self-heal cache; later runs
+reuse it. Interpreter fallback and self-healing stay enabled. The Docker check
+does not replace checking the visible Windows window with the Windows toolchain
+above.
 
 ## Local user files
 
-When cartridge execution is added, keep user-supplied inputs and saves under
-`local/` beside this README:
+The defaults in `emerald.toml` resolve these paths relative to this README:
 
-- `local/pokeemerald_modern.gba` — built ROM copied from the game repository.
-- `local/gba_bios.bin` — user-provided BIOS dump.
+- `../../../pokeemerald-modern-adult/pokeemerald_modern.gba` — ROM built by
+  `make modern` in the sibling game repository. Override it with `--rom` when
+  running from a different checkout.
+- `../../bios/gba_bios.bin` — local copy of the user-provided BIOS dump.
 - `local/saves/` — disposable and player cartridge saves.
 
-These paths are ignored by Git. The ROM and BIOS are not distributed with this
-project. The current stub does not read them or create save data; M0-4 will add
-the runtime command-line/configuration path and identity checks.
+The BIOS, generated code, and local saves are ignored by Git. The ROM and BIOS
+are not distributed with this project.

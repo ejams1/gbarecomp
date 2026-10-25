@@ -1,0 +1,41 @@
+# Hand-maintained shared recompiler/runtime config for the Modern Emerald ROM.
+# Generated symbol metadata is passed as a later --config overlay and never
+# overwrites this file.
+
+[program]
+name = "Pokemon Modern Emerald (USA)"
+id = "pokemon_modern_emerald"
+load_address = 0x08000000
+size = 0x02000000
+entry_pc = 0x08000000
+static_resume_all = true
+
+[identity]
+sha1 = "57d3561262bf5337293a2d31f6b79b5879f7cff7"
+
+# The vector at 0x08000000 is the ARM reset entry. IntrMain is an assembly IRQ
+# dispatch root with ELF STT_NOTYPE, so it is explicitly seeded here.
+[[extra_func]]
+addr = 0x08000250
+mode = "arm"
+name = "IntrMain"
+note = "ELF map/objdump verified IRQ dispatch root; ELF type is NOTYPE"
+
+[game]
+short_name = "Pokemon Modern Emerald"
+default_region = "USA"
+
+[rom]
+path = "../../../pokeemerald-modern-adult/pokeemerald_modern.gba"
+sha1 = "57d3561262bf5337293a2d31f6b79b5879f7cff7"
+
+[bios]
+path = "../../bios/gba_bios.bin"
+sha1 = "300c20df6731a33952ded8c436f7f186d25d3492"
+hle = false
+
+[save]
+path = "local/saves/pokemon-modern-emerald.sav"
+type = "flash1m"
+size = 0x20000
+

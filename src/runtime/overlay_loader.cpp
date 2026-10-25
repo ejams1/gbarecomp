@@ -263,6 +263,7 @@ void fill_callbacks() {
     g_callbacks.runtime_trace_enabled = &g_runtime_trace_enabled;
     g_callbacks.runtime_cycles     = &g_runtime_cycles;
     g_callbacks.runtime_break_pc   = &g_runtime_break_pc;
+    g_callbacks.runtime_resume_pc  = &g_runtime_resume_pc;
     g_callbacks.runtime_fn_entry_hook = &g_runtime_fn_entry_hook;
     g_callbacks.gba_mod_function_entry = gba_mod_function_entry;
 
