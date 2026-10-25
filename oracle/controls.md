@@ -99,6 +99,11 @@ register as an unsigned 32-bit value before changing any register. These two
 commands are diagnostic state injection; `emu_set_keys` is the gameplay input
 surface.
 
+The oracle suppresses informational/debug mGBA log messages by default because
+BIOS SWI and DMA messages can be emitted repeatedly on every frame. Fatal and
+error messages remain on stderr. Set `GBA_ORACLE_VERBOSE=1` in the oracle
+process environment to restore the full diagnostic stream.
+
 The audio tap retains at most 262144 generated samples in memory. When
 full it drops new samples and reports `samples_dropped`; draining samples
 releases queue capacity. This retains offscreen audio mixing while bounding
