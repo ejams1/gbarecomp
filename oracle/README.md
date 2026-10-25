@@ -21,58 +21,49 @@ setup script SHA-256: `C56DC494E5B4A0779334504BD61567046115037798D3833561A64CE45
 These are audit identities, not a substitute for the source pin or hashes of
 generated binaries.
 
-The current setup helper supports a local MSYS2/MinGW build or a Unix-like
-shell, but does not pin compiler/package versions, verify the clone commit, or
-isolate all build outputs. `oracle/CMakeLists.txt` expects a prebuilt static
-`${MGBA_ROOT}/build/libmgba.a` and matching headers. The outer CMake target is
-opt-in and must remain separate from the normal host target. The Windows link
-set includes `ws2_32 shlwapi winmm ole32 uuid`; the Unix/macOS branches add
-their platform libraries. Linux/WSL is not an assumed build path.
+The legacy setup helper supports a local MSYS2/MinGW build, but it does not
+enforce the full commit or pin packages. The container is the reproducible
+path. `CMakeLists.txt` works as an opt-in subdirectory or a standalone
+project and links the prebuilt static `${MGBA_ROOT}/build/libmgba.a` plus
+matching headers. The Windows link set includes `ws2_32 shlwapi winmm ole32
+uuid`; Linux links Threads, zlib, libpng, `dl`, and `m`. libmgba remains
+outside every production native target.
 
-## Provisioning decision for M0-9
+## M0-9 build path
 
-Use **MSYS2 MinGW-w64 UCRT64** on Windows as the reproducible target. Install
-MSYS2 and the x86_64 UCRT toolchain, CMake, Ninja, Git, pkg-config, and the
-headers required by the pinned mGBA 0.10.5 minimal static build. Record exact
-MSYS2 package versions and archive hashes in the M0-9 lock/provisioning note;
-the package database is rolling, so a package-name-only list is insufficient.
-Run configure/build from the UCRT64 shell and invoke the matching CMake/Ninja
-from that environment. M0-9 must amend the existing helper to verify the full
-mGBA commit, verify patch hashes/application, and use pinned package inputs.
+The selected reproducible path is the dedicated Linux container in
+`Dockerfile`. It pins mGBA to commit
+`26b7884bc25a5933960f3cdcd98bac1ae14d42e2`, uses Debian bookworm packages from
+snapshot `20261024T000000Z` (main, updates, and security), verifies the Windows patch hash manifest, and
+configures the oracle standalone. It does not configure ROM translation or the
+native game host. `dependencies.md` records dependencies, exact commands,
+loopback publication and the isolated-input policy.
 
-This session's Windows host has CMake 4.3.1 and Git 2.53.0, but no detected
-MSYS2/MinGW compiler, Ninja, mGBA application/package, mGBA source checkout,
-or oracle executable. Docker CLI 29.9.2 is installed; WSL reports
-`E_ACCESSDENIED` while enumerating distributions, and container daemon/image
-availability was not established. Therefore a container recipe is not a
-reproducible fallback here. No local mGBA package hash can be reported because
-no package is installed. Provisioning and actual package hashes remain M0-9
-work; the pinned upstream source commit above is the immutable source identity.
-
-Keep ROM compilation on the independently pinned `adult-emerald-build:r63-libpng`
-image. It is not the oracle toolchain and does not imply Docker is available to
-build mGBA.
+The Windows host has Docker CLI 29.9.2 and can reach the Docker Desktop daemon
+when invoked with the approved Docker command permission. WSL enumeration is
+denied, but WSL is not needed for the container path. The Dockerfile uses the
+Linux build and therefore does not apply Windows-only mGBA patches. The native
+Windows setup helper still needs a verified source checkout before it can be
+used as an alternative.
 
 ## Artifact and process contract
 
-M0-9 should keep all downloaded source and generated files ignored and outside
-the game source tree:
+The Docker build keeps downloaded source and generated files in its image,
+outside the game source tree. Only run inputs and reports need local host
+storage:
 
 ```text
-gbarecomp/third_party/mgba/                 # pinned source, ignored
-gbarecomp/third_party/mgba/build/            # static libmgba + headers, ignored
-gbarecomp/build/oracle/                      # gbarecomp_oracle.exe, ignored
+container:/opt/gbarecomp/third_party/mgba/  # pinned source and static library
+container:/opt/gbarecomp/build/              # gbarecomp_oracle executable
 pokeemerald-modern-adult/tools/validation/.local/ # local BIOS/ROM/scratch saves/reports
 ```
 
 The game runner owns process startup/shutdown, uses an explicit config copy
-based on `tools/validation/mgba.local.example.toml`, and binds only to
-`127.0.0.1`. The current oracle listens on TCP 19843 by default; use a
-per-run assigned port when available and fail if the endpoint is already in
-use. Never place BIOS, ROM, personal saves, or transient reports in versioned
-source directories. Keep one oracle process and scratch save per run. The
-oracle and game runner communicate over localhost; no native host process is
-needed.
+based on `tools/validation/mgba.local.example.toml`, and publishes the port
+only as `127.0.0.1:19843` on the host. The process listens on `0.0.0.0` only
+inside the container for Docker forwarding. Never place BIOS, ROM, personal
+saves, or transient reports in versioned source directories. Keep one oracle
+container and scratch save per run. No native host process is needed.
 
 ## Existing API audit (observed in `main.cpp`)
 

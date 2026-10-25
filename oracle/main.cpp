@@ -1002,7 +1002,7 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
 // Line-delimited TCP server
 // ─────────────────────────────────────────────────────────────────────
 
-int run_server(Oracle& o, int port) {
+int run_server(Oracle& o, int port, const char* bind_address) {
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -1022,10 +1022,18 @@ int run_server(Oracle& o, int port) {
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (!bind_address || std::strcmp(bind_address, "127.0.0.1") == 0) {
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    } else if (std::strcmp(bind_address, "0.0.0.0") == 0) {
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else {
+        std::fprintf(stderr, "oracle: unsupported bind address %s\n", bind_address);
+        CLOSESOCK(srv);
+        return 1;
+    }
     addr.sin_port = htons(static_cast<uint16_t>(port));
     if (::bind(srv, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        std::fprintf(stderr, "oracle: bind to 127.0.0.1:%d failed\n", port);
+        std::fprintf(stderr, "oracle: bind to %s:%d failed\n", bind_address, port);
         return 1;
     }
     if (::listen(srv, 1) != 0) {
@@ -1033,7 +1041,7 @@ int run_server(Oracle& o, int port) {
         return 1;
     }
 
-    std::printf("oracle: listening on 127.0.0.1:%d\n", port);
+    std::printf("oracle: listening on %s:%d\n", bind_address, port);
     std::fflush(stdout);
 
     bool quit_server = false;
@@ -1091,6 +1099,7 @@ int run_server(Oracle& o, int port) {
 struct Args {
     std::string bios = "bios/gba_bios.bin";
     std::string rom;
+    std::string bind_address = "127.0.0.1";
     int         port = 19843;
 };
 
@@ -1101,6 +1110,7 @@ Args parse_args(int argc, char** argv) {
         if (s == "--bios" && i + 1 < argc) { a.bios = argv[++i]; continue; }
         if (s == "--no-bios") { a.bios.clear(); continue; }
         if (s == "--rom"  && i + 1 < argc) { a.rom  = argv[++i]; continue; }
+        if (s == "--bind" && i + 1 < argc) { a.bind_address = argv[++i]; continue; }
         if (s == "--port" && i + 1 < argc) { a.port = std::atoi(argv[++i]); continue; }
         std::fprintf(stderr, "oracle: unknown arg %.*s\n",
                      static_cast<int>(s.size()), s.data());
@@ -1117,7 +1127,7 @@ int main(int argc, char** argv) {
                 args.rom.empty() ? nullptr : args.rom.c_str())) {
         return 1;
     }
-    int rc = run_server(o, args.port);
+    int rc = run_server(o, args.port, args.bind_address.c_str());
     o.shutdown();
     return rc;
 }
