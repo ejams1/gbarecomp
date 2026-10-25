@@ -5,7 +5,7 @@ game host. The required validation harness builds it from mGBA **0.10.5** at
 commit `26b7884bc25a5933960f3cdcd98bac1ae14d42e2`; do not follow a moving tag
 or copy the libmgba dependency into the host build.
 
-## Current source and build status
+## Dependency identity and build status
 
 `setup-mgba.sh` currently clones tag `0.10.5` with `--depth 1`, which does not
 prove the requested commit identity. It applies two Windows-only patches:
@@ -15,11 +15,11 @@ prove the requested commit identity. It applies two Windows-only patches:
 | `patches/0001-msys2-as-windows.patch` | `D170E67F618604AB7684099969D9AA6679CBB8A9A582CE9AFCB52A7B76458675` | Make upstream CMake take its Windows configuration under MSYS2. |
 | `patches/0002-windows-no-sigtrap.patch` | `B6EBB56E78C6A7E7ED0E735635AF5DB096CE362D12877BE25D284C5F629F959F` | Remove the Windows pthread SIGTRAP path. |
 
-Oracle source SHA-256 at audit: `148D4A151082639C4655BE3A894F092A784FA2597C7BEF0F56512C00B4EA1521`
-(`main.cpp`); CMake SHA-256: `4946147A4077E15EDA5EBC00D7E921C2E1ABAD6DAF7BE811B9876727B5CA7071`;
-setup script SHA-256: `C56DC494E5B4A0779334504BD61567046115037798D3833561A64CE45EEAACEA`.
-These are audit identities, not a substitute for the source pin or hashes of
-generated binaries.
+The setup script SHA-256 recorded during M0-8 is
+`C56DC494E5B4A0779334504BD61567046115037798D3833561A64CE45EEAACEA`. Source
+hashes from that earlier audit are not current after M0-10; use Git history and
+the pinned source commit for provenance, and record generated binary hashes in
+run artifacts.
 
 The legacy setup helper supports a local MSYS2/MinGW build, but it does not
 enforce the full commit or pin packages. The container is the reproducible
@@ -65,7 +65,11 @@ inside the container for Docker forwarding. Never place BIOS, ROM, personal
 saves, or transient reports in versioned source directories. Keep one oracle
 container and scratch save per run. No native host process is needed.
 
-## Existing API audit (observed in `main.cpp`)
+## M0-8 API audit (historical baseline before M0-10)
+
+M0-10 implemented the controls and bounds from this audit. The current
+protocol, defaults, request limits, and exact endpoint list are documented in
+[`controls.md`](controls.md).
 
 The oracle currently accepts line-delimited JSON over one localhost TCP client
 at a time, with an 8192-byte request cap and one-line JSON replies. It has no

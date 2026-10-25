@@ -57,4 +57,6 @@ elseif(APPLE)
 endif()
 target_compile_definitions(gbarecomp_oracle PRIVATE
     M_CORE_GBA=1
+    MGBA_ORACLE_VERSION=\"0.10.5\"
+    MGBA_ORACLE_COMMIT=\"26b7884bc25a5933960f3cdcd98bac1ae14d42e2\"
 )
