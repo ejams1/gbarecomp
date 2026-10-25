@@ -55,6 +55,21 @@ extern "C" {
 
 namespace {
 
+// mGBA emits BIOS SWI and DMA diagnostics at informational levels, often on
+// every frame. Keep bounded agent-run reports useful by retaining errors and
+// exposing the full stream only when explicitly requested.
+void oracle_log(struct mLogger* logger, int category, enum mLogLevel level,
+                const char* format, va_list args) {
+    (void)logger;
+    (void)category;
+    if (std::getenv("GBA_ORACLE_VERBOSE") || level == mLOG_FATAL || level == mLOG_ERROR) {
+        std::vfprintf(stderr, format, args);
+        std::fputc('\n', stderr);
+    }
+}
+
+struct mLogger g_oracle_logger = {.log = oracle_log};
+
 // ─────────────────────────────────────────────────────────────────────
 // JSON micro-helpers
 // ─────────────────────────────────────────────────────────────────────
@@ -1651,6 +1666,7 @@ bool parse_args(int argc, char** argv, Args& a, std::string& error) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    mLogSetDefaultLogger(&g_oracle_logger);
     Args args;
     std::string error;
     if (!parse_args(argc, argv, args, error)) {
