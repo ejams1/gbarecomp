@@ -6,6 +6,8 @@ bios/*.BIN
 # Build output
 build/
 build-*/
+games/emerald_adult/build/
+games/emerald_adult/local/
 
 # Generated code (derivative of copyrighted BIOS / ROM; regenerate locally)
 **/generated/*.c
