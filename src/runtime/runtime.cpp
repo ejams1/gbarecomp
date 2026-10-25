@@ -3584,6 +3584,24 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     const char* input_replay_env = std::getenv("GBARECOMP_INPUT_REPLAY");
     const bool input_record_requested = input_record_env && input_record_env[0];
     const bool input_replay_requested = input_replay_env && input_replay_env[0];
+    const char* input_replay_clock_env =
+        std::getenv("GBARECOMP_INPUT_REPLAY_CLOCK");
+    const bool input_replay_vblank_clock = input_replay_clock_env &&
+        std::strcmp(input_replay_clock_env, "vblank") == 0;
+    if (input_replay_clock_env && input_replay_clock_env[0] &&
+        std::strcmp(input_replay_clock_env, "ppu") != 0 &&
+        !input_replay_vblank_clock) {
+        std::fprintf(stderr,
+                     "[gbarecomp:runtime] GBARECOMP_INPUT_REPLAY_CLOCK must be ppu or vblank\n");
+        runtime_shutdown();
+        return 1;
+    }
+    if (input_replay_vblank_clock && !input_replay_requested) {
+        std::fprintf(stderr,
+                     "[gbarecomp:runtime] VBlank replay clock requires GBARECOMP_INPUT_REPLAY\n");
+        runtime_shutdown();
+        return 1;
+    }
     if (input_record_requested && input_replay_requested) {
         std::fprintf(stderr,
                      "[gbarecomp:runtime] GBARECOMP_INPUT_RECORD and "
@@ -3652,15 +3670,25 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             return 1;
         }
         if (!args.quiet)
-            std::printf("input_replay=ENABLED path=\"%s\" events=%zu\n",
+            std::printf("input_replay=ENABLED clock=%s path=\"%s\" events=%zu\n",
+                        input_replay_vblank_clock ? "vblank" : "ppu",
                         input_replay_env, input_replay_events.size());
     } else if (!args.quiet) {
         std::printf("input_replay=DISABLED\n");
     }
 
+    auto input_replay_frame = [&]() -> uint64_t {
+        if (!input_replay_vblank_clock) return ppu.frame_count();
+        // mGBA runFrame returns at VBlank-start. frame_count() advances at
+        // scanline wrap, so account for the in-progress VBlank when making
+        // the frame-indexed replay clock match that boundary. This is also
+        // derivable after GBAS restore; the runtime VBlank counter is not.
+        return static_cast<uint64_t>(ppu.frame_count()) +
+               (ppu.vcount() >= gba::GbaPpu::kLinesVisible ? 1u : 0u);
+    };
     auto apply_input_replay = [&]() {
         if (!input_replay_requested) return;
-        const uint64_t frame = ppu.frame_count();
+        const uint64_t frame = input_replay_frame();
         while (input_replay_index + 1 < input_replay_events.size() &&
                input_replay_events[input_replay_index + 1].frame <= frame) {
             ++input_replay_index;
@@ -3669,6 +3697,14 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             bus.io().set_keyinput(
                 input_replay_events[input_replay_index].keyinput);
     };
+    if (input_replay_vblank_clock) {
+        // Match the oracle's set-keys-between-runFrame-calls contract at the
+        // VBlank-start boundary, before the guest services that frame's IRQ.
+        runtime_set_vblank_input_hook([&]() {
+            if (opts.input_frame) run_touch_policy();
+            apply_input_replay();
+        });
+    }
 
     // Optional monotonic-pump Assist action script for automated validation.
     // It exercises the same runtime save/load, fast-forward, and rewind paths
@@ -4759,6 +4795,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     // more frames past the restored frame counter instead of breaking on the
     // first step when the loaded index already exceeds the cap.
     const uint64_t headless_base_frame = ppu.frame_count();
+    const uint64_t headless_base_clock = input_replay_vblank_clock
+        ? input_replay_frame() : headless_base_frame;
     // Passive bounded headless runs need no per-frame host work. Keep their
     // guest call stack intact just like windowed play and unwind only after the
     // requested final VBlank. Emerald's IRQ-driven SoundMainRAM mixer is a
@@ -4766,19 +4804,28 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     // PC every frame eventually corrupts its mixer state, while resuming in
     // place follows the hardware control flow.
     //
-    // Demo input, input replay, TCP debugging, and widescreen sidecar runs
-    // still require the outer loop at each frame boundary.
-    const bool passive_headless_present_in_place =
+    // Demo input, TCP debugging, and widescreen sidecar runs still require
+    // the outer loop at each frame boundary. A frame-indexed replay can run
+    // in place when its input is advanced from this same VBlank hook.
+    const bool headless_present_in_place =
         !args.window && args.frames >= 0 && args.tcp_port <= 0 &&
-        !demo_input && !input_replay_requested && present_in_place &&
+        !demo_input && present_in_place &&
         !diag.playing();
-    if (passive_headless_present_in_place) {
+    if (headless_present_in_place) {
         std::fprintf(stderr, "[gbarecomp:runtime] headless present-in-place ON "
-                     "(unwind at final frame only; "
+                     "(frame-boundary replay; unwind at final frame only; "
                      "GBARECOMP_PRESENT_IN_PLACE=0 to disable)\n");
         runtime_set_frame_present_hook([&]() -> bool {
-            return ppu.frame_count() - headless_base_frame >=
-                   static_cast<uint64_t>(args.frames);
+            if (input_replay_requested && !input_replay_vblank_clock)
+                apply_input_replay();
+            const uint64_t current_clock = input_replay_vblank_clock
+                ? input_replay_frame() : ppu.frame_count();
+            if (current_clock - headless_base_clock >=
+                static_cast<uint64_t>(args.frames)) {
+                host_quit = true;
+                return true;
+            }
+            return false;
         });
     }
 
