@@ -11,7 +11,7 @@ entry_pc = 0x08000000
 static_resume_all = true
 
 [identity]
-sha1 = "e764baa0841c3c36755a5fcc211e9c92446450c6"
+sha1 = "a3cc21dc076e5e0af690d98d0f009ca7e23e707c"
 
 # The vector at 0x08000000 is the ARM reset entry. IntrMain is an assembly IRQ
 # dispatch root with ELF STT_NOTYPE, so it is explicitly seeded here.
@@ -130,7 +130,7 @@ default_region = "USA"
 
 [rom]
 path = "../../../pokeemerald-modern-adult/pokeemerald_modern.gba"
-sha1 = "e764baa0841c3c36755a5fcc211e9c92446450c6"
+sha1 = "a3cc21dc076e5e0af690d98d0f009ca7e23e707c"
 
 [bios]
 path = "../../bios/gba_bios.bin"

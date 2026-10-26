@@ -254,7 +254,9 @@ def main() -> int:
             raise ValueError("host ROM does not match emerald.toml identity")
         header = host.parent.parent / "generated" / "host_scene_state_address.h"
         if not header.is_file():
-            header = host.parent.parent / "generated" / "host_scene_state_address.h"
+            # Per-profile hosts live at local/<profile>/build, while generated
+            # ABI headers remain shared at games/emerald_adult/generated.
+            header = host.parent.parent.parent.parent / "generated" / "host_scene_state_address.h"
         address_match = re.search(
             r"kGbaHostSceneStateAddress\s*=\s*(0x[0-9A-Fa-f]+)",
             header.read_text(encoding="utf-8"))
