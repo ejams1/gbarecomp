@@ -168,6 +168,7 @@ struct Args {
     int frames = -1;
     int scale = 3;
     int tcp_port = 0;
+    bool tcp_bind_any_interface = false;
     bool steps_set = false;
     bool frames_set = false;
     bool window_set = false;
@@ -840,7 +841,7 @@ bool apply_toml_file(const std::filesystem::path& path, Args* args,
 constexpr std::string_view kCliValueFlags[] = {
     "--config",      "--bios",          "--rom",           "--bios-sha1",
     "--rom-sha1",    "--rom-crc32",     "--steps",         "--frames",
-    "--scale",       "--tcp",           "--tcp-observe",   "--dump-bmp",
+    "--scale",       "--tcp",           "--tcp-bind",      "--tcp-observe",   "--dump-bmp",
     "--dump-png",    "--load-state",    "--dump-state",    "--view-width",    "--widescreen",
     "--save",        "--save-path",     "--gyro-sensitivity",
     "--sharp-filter", "--linear-filter", "--affine-filter", "--internal-resolution", "--screen",
@@ -997,6 +998,19 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
                 return false;
             }
             args->quiet = true;
+            continue;
+        }
+        if (s == "--tcp-bind") {
+            const char* value = need_value("--tcp-bind");
+            if (!value) return false;
+            if (std::strcmp(value, "127.0.0.1") == 0) {
+                args->tcp_bind_any_interface = false;
+            } else if (std::strcmp(value, "0.0.0.0") == 0) {
+                args->tcp_bind_any_interface = true;
+            } else {
+                if (err) *err = "--tcp-bind must be 127.0.0.1 or 0.0.0.0";
+                return false;
+            }
             continue;
         }
         if (s == "--dump-bmp") {
@@ -1221,6 +1235,10 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
             continue;
         }
         if (err) *err = "unknown argument " + s;
+        return false;
+    }
+    if (args->tcp_bind_any_interface && args->tcp_port <= 0) {
+        if (err) *err = "--tcp-bind 0.0.0.0 requires --tcp";
         return false;
     }
     return true;
@@ -2868,7 +2886,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         ctx.cycles_elapsed = reinterpret_cast<uint64_t*>(&g_runtime_cycles);
         ctx.last_step_cycles = &last_step_cycles;
         ctx.sync_frames = &vblank_count;
-        bool ok = server.run(args.tcp_port, ctx);
+        bool ok = server.run(args.tcp_port, ctx,
+            args.tcp_bind_any_interface
+                ? debug::TcpDebugServer::BindAddress::AnyInterface
+                : debug::TcpDebugServer::BindAddress::Loopback);
         // Server returned (client sent `quit`). Stop the game thread. If it is
         // wedged in a freeze it will not observe RS_QUIT until the frame returns
         // (it never will) — but a clean quit is always issued while parked, so

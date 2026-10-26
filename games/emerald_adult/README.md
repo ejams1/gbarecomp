@@ -257,3 +257,12 @@ The input converter has unit coverage for all four stick directions, the
 threshold boundary, D-pad/button combination and neutral state. A physical
 controller-only play, focus-transition, and reconnect check is still a manual
 qualification item; no controller hardware was attached to the headless build.
+
+## Deterministic validation bridge (M1-4)
+
+The planned M1-4 game validation adapter will use the bounded TCP protocol and
+agent-test mailbox. The host wire commands, frame boundary, identity
+requirements, and Docker loopback publishing rule are documented in
+[`docs/agent-bridge.md`](docs/agent-bridge.md). Keep the TCP listener on
+loopback; when a container needs an internal all-interface bind, publish its
+port only to `127.0.0.1` on the host.

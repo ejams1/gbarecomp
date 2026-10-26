@@ -877,6 +877,12 @@ add_executable(controller_mapping_tests tests/runtime/controller_mapping_test.cp
 target_include_directories(controller_mapping_tests PRIVATE src/runtime)
 add_test(NAME controller_mapping_tests COMMAND controller_mapping_tests)
 
+add_executable(tcp_debug_server_agent_contract_tests
+    tests/debug/tcp_debug_server_agent_contract_test.cpp)
+target_link_libraries(tcp_debug_server_agent_contract_tests PRIVATE gbarecomp_debug)
+add_test(NAME tcp_debug_server_agent_contract_tests
+    COMMAND tcp_debug_server_agent_contract_tests)
+
 add_executable(mod_audio_tests
     tests/mod_audio/test_main.cpp
     src/gba/mod_audio.cpp)
