@@ -873,6 +873,10 @@ add_executable(codebreaker_tests
 target_include_directories(codebreaker_tests PRIVATE src/runtime)
 add_test(NAME codebreaker_tests COMMAND codebreaker_tests)
 
+add_executable(controller_mapping_tests tests/runtime/controller_mapping_test.cpp)
+target_include_directories(controller_mapping_tests PRIVATE src/runtime)
+add_test(NAME controller_mapping_tests COMMAND controller_mapping_tests)
+
 add_executable(mod_audio_tests
     tests/mod_audio/test_main.cpp
     src/gba/mod_audio.cpp)

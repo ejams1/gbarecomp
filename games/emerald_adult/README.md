@@ -221,3 +221,39 @@ The defaults in `emerald.toml` resolve these paths relative to this README:
 
 The BIOS, generated code, and local saves are ignored by Git. The ROM and BIOS
 are not distributed with this project.
+
+## Controller input (M1-1)
+
+The desktop host accepts SDL2 GameController devices that have a standard SDL
+controller mapping. SDL selects the physical layout mapping; the game maps that
+standard layout to GBA controls as follows:
+
+| SDL control | GBA control |
+|---|---|
+| South face button (SDL A) | A |
+| East face button (SDL B) | B |
+| Back / View | Select |
+| Start | Start |
+| D-pad | matching direction |
+| Left stick | matching direction after crossing the 16,000-unit axis deadzone |
+| Right shoulder | R |
+| Left shoulder | L |
+
+D-pad, left stick, and keyboard input combine, so any of them can be used at
+once. The host opens the first recognized SDL GameController and checks its
+attached state while sampling input. On device removal it closes the old handle
+and tries the remaining devices; a newly attached recognized device is opened
+when no controller is active. An SDL device that appears only as an unmapped
+raw joystick is not accepted as a GameController.
+
+Keyboard bindings are shared with the launcher and can be changed in
+`keybinds.ini` under `[player1]` using SDL scancode names. Defaults are A=X,
+B=Z, Select=Right Shift, Start=Return, directions=arrow keys, R=V and L=C.
+Gamepad button translation follows SDL's standardized mapping; this fork does
+not expose a separate button-mode or per-button gamepad rebinding setting.
+Window hotkeys remain in `config.ini` under `[KeyMap]`.
+
+The input converter has unit coverage for all four stick directions, the
+threshold boundary, D-pad/button combination and neutral state. A physical
+controller-only play, focus-transition, and reconnect check is still a manual
+qualification item; no controller hardware was attached to the headless build.

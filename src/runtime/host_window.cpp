@@ -1,6 +1,7 @@
 // host_window.cpp — SDL2-backed window. Stubs out when SDL2 isn't found.
 
 #include "host_window.h"
+#include "gamepad_input.h"
 #include <stdexcept>
 
 #include <algorithm>
@@ -3225,6 +3226,7 @@ HostWindow::Events HostWindow::pump() {
     // inputs. Keyboard and controller are additive so either can be used at
     // any time, including while testing motion.
     if (b->controller && SDL_GameControllerGetAttached(b->controller)) {
+        uint16_t controller_buttons = 0;
         const struct {
             int bit;
             SDL_GameControllerButton button;
@@ -3242,8 +3244,14 @@ HostWindow::Events HostWindow::pump() {
         };
         for (const auto& binding : pad_map) {
             if (SDL_GameControllerGetButton(b->controller, binding.button))
-                keys &= static_cast<uint16_t>(~(1u << binding.bit));
+                controller_buttons |= static_cast<uint16_t>(1u << binding.bit);
         }
+        const std::int16_t left_x = SDL_GameControllerGetAxis(
+            b->controller, SDL_CONTROLLER_AXIS_LEFTX);
+        const std::int16_t left_y = SDL_GameControllerGetAxis(
+            b->controller, SDL_CONTROLLER_AXIS_LEFTY);
+        keys &= recomp::input::gba_keyinput_from_gamepad(
+            controller_buttons, left_x, left_y);
     }
     if (b->touch_controls) {
         const uint16_t touch_buttons = active_touch_buttons(b);
