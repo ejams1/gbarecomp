@@ -1,4 +1,4 @@
-# Native scene media seam (M5-1)
+# Native scene media seam and runtime contract (M5-1/M5-2)
 
 ## Decision
 
@@ -38,7 +38,19 @@ The sequence guard lets the host reject an incomplete or changing record. The cu
 - Reset/activation: trusted runtime activation clears published presentation before callbacks. Without the selected `pokemon-adult.gallery-media-seam.v1` plugin, the observer does not publish.
 - Pause/fast-forward: playback position comes from guest VBlanks, so host frames pause and accelerate with the guest.
 - Netplay: optional local media remains inactive; the GBA scene is the shared deterministic fallback.
-- Audio: this prototype uses the GBA's existing scene audio unchanged. Native streaming audio is deferred to M5-2.
+- Audio: selected activation registers the public trusted pull-stream API and starts a bounded 65536-Hz mono S16 silence source. Silence leaves guest M4A and sound effects audible at native gain 100 while proving that the committed-plugin capability is available. The observer stops the stream for invalid/inactive guest state and starts it again when a valid active scene is observed. On savestate restore, the runtime stops delivery and restores native gain but preserves the callback and capability; the changed `state_epoch` makes the observer restart it for the restored active scene. Reset retires the capability before the reset callback, which drops its local handle without using it.
+- Stream callbacks run on the emulation PCM producer thread, never SDL's consumer callback. This callback fills only the caller's requested bounded buffer (at most 1024 samples), and performs no allocation, locking, I/O, SDL calls, or API re-entry. It returns the full request so ordinary buffer boundaries do not end the voice. The immutable BGR555 frame arrays are initialized before emulation and published on the game thread; the compositor consumes the published pointer as immutable data. The initial silence shell is intentionally neutral; M5-3 supplies prepared host audio and its gain policy.
+
+## Runtime API reuse (M5-2)
+
+No generic framework API change was needed. The M5-1 observer already runs in
+the selected game host and has access to the committed-plugin presentation
+gate. `gba_mod_publish_foreign_background` supplies the immutable frame path;
+`gba_mod_audio_stream_register_s16_mono` provides an activation-scoped opaque
+capability and `play`/`stop` handle stream lifecycle. The stream's callback
+bound and gain-reset behavior are part of `docs/MOD_AUDIO.md`. When no package
+is selected and committed, activation does not call the scene plugin, so there
+is no stream registration or output.
 
 No function-entry hook is needed for the production seam. The framework hook API is a replacement API with a strict CPU return-state contract; using it would add guest control flow without improving the observation. The generic hook mechanism's static, interpreted, and healed-code tiers remain unclaimed by this task.
 
