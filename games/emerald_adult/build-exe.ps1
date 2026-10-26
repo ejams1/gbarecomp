@@ -190,7 +190,7 @@ try {
         $script:NativeExitCode = $LASTEXITCODE
         throw "Unable to read the framework Git revision."
     }
-    $frameworkStatus = (& git -C $frameworkRoot status --porcelain).Trim()
+    $frameworkStatus = (& git -C $frameworkRoot status --porcelain | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) {
         $script:NativeExitCode = $LASTEXITCODE
         throw "Unable to inspect framework working-tree state."
