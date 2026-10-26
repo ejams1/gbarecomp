@@ -5,24 +5,27 @@
 #include "mod_runtime.h"
 #include "runtime.h"
 #include "runtime_bus_bridge.h"
+#include "gallery_media_package.h"
 #include "../generated/host_scene_state_address.h"
 
 #include <array>
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 
 namespace emerald_media {
 namespace {
 constexpr char kPluginId[] = "pokemon-adult.gallery-media-seam.v1";
-constexpr std::uint16_t kSceneIdCoast = 0x4001;
-constexpr std::uint16_t kMediaIdCoast0 = 0x4110;
 constexpr std::uint16_t kHostStateActive = 1u << 0;
 constexpr std::uint16_t kHostStateFrameVisible = 1u << 1;
 constexpr std::uint16_t kHostStateLooping = 1u << 2;
+constexpr std::uint16_t kHostStateGuestMusicEnabled = 1u << 3;
 constexpr std::uint16_t kHostStateKnownFlags =
-    kHostStateActive | kHostStateFrameVisible | kHostStateLooping;
-constexpr std::uint32_t kCoastDurationVBlanks = 30;
-constexpr std::size_t kPixels = 240u * 160u;
+    kHostStateActive | kHostStateFrameVisible | kHostStateLooping |
+    kHostStateGuestMusicEnabled;
 
 struct GbaHostSceneState {
     std::uint16_t version;
@@ -42,68 +45,36 @@ static_assert(sizeof(GbaHostSceneState) == 32);
 static_assert(offsetof(GbaHostSceneState, invocation_id) == 8);
 static_assert(offsetof(GbaHostSceneState, elapsed_vblanks) == 20);
 
-constexpr std::uint16_t color(std::uint16_t r, std::uint16_t g, std::uint16_t b) {
-    return static_cast<std::uint16_t>((r & 31u) | ((g & 31u) << 5) |
-                                      ((b & 31u) << 10));
-}
-
-using Frame = std::array<std::uint16_t, kPixels>;
-using Frames = std::array<Frame, 3>;
-
-Frames make_neutral_coast_frames() {
-    Frames frames{};
-    for (std::size_t index = 0; index < frames.size(); ++index) {
-        Frame& frame = frames[index];
-        for (std::uint16_t y = 0; y < 160; ++y) {
-            for (std::uint16_t x = 0; x < 240; ++x) {
-                std::uint16_t r, g, b;
-                if (y < 89) {
-                    const std::uint16_t shade = static_cast<std::uint16_t>((y / 18 + index) % 5);
-                    r = 7 + shade; g = 15 + shade; b = 24 + shade;
-                } else if (y < 119) {
-                    const std::uint16_t ripple = static_cast<std::uint16_t>(((x / 24 + y / 5 + index) % 4));
-                    r = 4 + ripple; g = 12 + ripple; b = 18 + ripple;
-                } else {
-                    const int coast = 116 + static_cast<int>((x + index * 9) / 12 % 11);
-                    if (static_cast<int>(y) >= coast) {
-                        r = 17; g = 19; b = 13;
-                    } else {
-                        r = 5; g = 12; b = 18;
-                    }
-                }
-                const int dx = static_cast<int>(x) - 191;
-                const int dy = static_cast<int>(y) - 39;
-                if (dx * dx + dy * dy <= 8 * 8) {
-                    r = 30; g = 26; b = 16;
-                }
-                frame[static_cast<std::size_t>(y) * 240 + x] = color(r, g, b);
-            }
-        }
-    }
-    return frames;
-}
-
-// Static immutable host media. Initialization precedes the emulation loop;
-// the per-frame callback neither allocates nor decodes.
-const Frames kNeutralCoastFrames = make_neutral_coast_frames();
+GalleryMediaPackage sMedia;
 bool sEnabled;
 std::uint16_t sLastMediaId = 0xFFFF;
 std::uint32_t sLastInvocation = 0;
+std::uint32_t sLastElapsedVblanks = 0;
 std::uint64_t sLastStateEpoch = ~std::uint64_t{0};
 GBAModAudioStream sAudioStream = GBA_MOD_AUDIO_STREAM_INVALID;
 bool sStreamPlaying = false;
+std::atomic<std::size_t> sAudioCursor{0};
+std::atomic<bool> sAudioMuted{true};
 
-// The initial trusted shell exercises the bounded pull-stream lifecycle while
-// contributing no sound over the guest's existing music and effects.
-std::size_t read_silence(void*, std::int16_t* dst, std::size_t max_frames) {
+const char* resolve_package_asset(void*, const char* asset_id) {
+    return gba_mod_required_asset_path("adult.gallery-media", asset_id);
+}
+
+std::size_t read_media_audio(void*, std::int16_t* dst, std::size_t max_frames) {
     if (!dst || max_frames > GBA_MOD_AUDIO_MAX_STREAM_CALLBACK_FRAMES) return 0;
-    for (std::size_t i = 0; i < max_frames; ++i) dst[i] = 0;
-    return max_frames;
+    const std::size_t offset = sAudioCursor.fetch_add(max_frames, std::memory_order_relaxed);
+    if (sAudioMuted.load(std::memory_order_relaxed)) {
+        std::fill_n(dst, max_frames, 0);
+        return max_frames;
+    }
+    return sMedia.read_audio(offset, dst, max_frames, sMedia.loops());
 }
 
 void stop_stream() {
     if (sAudioStream != GBA_MOD_AUDIO_STREAM_INVALID && sStreamPlaying)
         gba_mod_audio_stream_stop(sAudioStream);
+    if (sAudioStream != GBA_MOD_AUDIO_STREAM_INVALID)
+        gba_mod_audio_stream_set_native_gain_percent(sAudioStream, 100);
     sStreamPlaying = false;
 }
 
@@ -114,12 +85,37 @@ void reset_media() {
     sEnabled = false;
     sLastMediaId = 0xFFFF;
     sLastInvocation = 0;
+    sLastElapsedVblanks = 0;
+    sAudioMuted.store(true, std::memory_order_relaxed);
+    sAudioCursor.store(0, std::memory_order_relaxed);
     sLastStateEpoch = ~std::uint64_t{0};
+    sAudioCursor.store(0, std::memory_order_relaxed);
+    sAudioMuted.store(true, std::memory_order_relaxed);
+    sMedia.clear();
     gba_mod_clear_foreign_background();
 }
 
 void activate_media() {
-    sAudioStream = gba_mod_audio_stream_register_s16_mono(read_silence, nullptr);
+    std::string media_error;
+    const char* media_manifest = gba_mod_required_asset_path(
+        "adult.gallery-media", "media-manifest-json");
+    bool media_loaded = false;
+    try {
+        media_loaded = media_manifest && sMedia.load(
+            media_manifest, resolve_package_asset, nullptr, &media_error);
+    } catch (...) {
+        media_error = "not enough memory to load bounded scene media";
+    }
+    if (!media_loaded) {
+        std::fprintf(stderr, "[gallery-media] disabled: %s\n",
+                     media_error.empty() ? "committed package manifest is unavailable"
+                                         : media_error.c_str());
+        sEnabled = false;
+        return;
+    }
+    std::fprintf(stderr, "[gallery-media] ready: scene=%04x frames=%zu samples=%u\n",
+                 sMedia.scene_id(), sMedia.frame_count(), sMedia.total_samples());
+    sAudioStream = gba_mod_audio_stream_register_s16_mono(read_media_audio, nullptr);
     if (sAudioStream == GBA_MOD_AUDIO_STREAM_INVALID ||
         !gba_mod_audio_stream_set_enabled(sAudioStream, 1) ||
         !gba_mod_audio_stream_play(sAudioStream, 100)) {
@@ -136,6 +132,7 @@ void activate_media() {
     sEnabled = true;
     sLastMediaId = 0xFFFF;
     sLastInvocation = 0;
+    sLastElapsedVblanks = 0;
     sLastStateEpoch = ~std::uint64_t{0};
 }
 
@@ -168,7 +165,7 @@ bool read_scene_state(GbaHostSceneState& out) {
 void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
     if (!sEnabled || !frame) return;
     GbaHostSceneState state{};
-    if (!read_scene_state(state) || state.version != 1 || state.size != sizeof(state) ||
+    if (!read_scene_state(state) || state.version != 2 || state.size != sizeof(state) ||
         state.invocation_id == 0 || (state.flags & ~kHostStateKnownFlags) != 0) {
         stop_stream();
         gba_mod_clear_foreign_background();
@@ -182,9 +179,14 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
         sLastMediaId = 0xFFFF;
         return;
     }
-    if (state.scene_id != kSceneIdCoast || state.total_vblanks != kCoastDurationVBlanks ||
-        !(state.flags & kHostStateLooping) || state.frame_index >= kNeutralCoastFrames.size() ||
-        state.media_id != kMediaIdCoast0 + state.frame_index ||
+    const bool guest_music_enabled =
+        (state.flags & kHostStateGuestMusicEnabled) != 0;
+    const bool guest_looping = (state.flags & kHostStateLooping) != 0;
+    if (state.scene_id != sMedia.scene_id() ||
+        state.total_vblanks != sMedia.total_vblanks() ||
+        guest_looping != sMedia.loops() || state.frame_index >= sMedia.frame_count() ||
+        state.media_id != sMedia.media_id(state.frame_index) ||
+        sMedia.frame_for_elapsed(state.elapsed_vblanks) != state.frame_index ||
         state.player_state > 5 ||
         state.elapsed_vblanks >= (static_cast<std::uint64_t>(state.loop_count) + 1) *
                                      state.total_vblanks) {
@@ -193,11 +195,23 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
         sLastMediaId = 0xFFFF;
         return;
     }
-    const bool restored = frame->state_epoch != sLastStateEpoch;
-    if (frame->state_epoch != sLastStateEpoch || state.invocation_id != sLastInvocation ||
+    const bool rewound = state.elapsed_vblanks < sLastElapsedVblanks;
+    const bool restored = frame->state_epoch != sLastStateEpoch || rewound;
+    sAudioCursor.store(sMedia.sample_for_elapsed(state.elapsed_vblanks),
+                       std::memory_order_relaxed);
+    sAudioMuted.store(!guest_music_enabled, std::memory_order_relaxed);
+    if (sAudioStream != GBA_MOD_AUDIO_STREAM_INVALID &&
+        !gba_mod_audio_stream_set_native_gain_percent(
+            sAudioStream, guest_music_enabled ? 0 : 100)) {
+        stop_stream();
+        gba_mod_clear_foreign_background();
+        sLastMediaId = 0xFFFF;
+        return;
+    }
+    if (restored || state.invocation_id != sLastInvocation ||
         state.media_id != sLastMediaId) {
-        const auto& pixels = kNeutralCoastFrames[state.frame_index];
-        if (!gba_mod_publish_foreign_background(kPluginId, pixels.data())) {
+        const std::uint16_t* pixels = sMedia.frame(state.frame_index);
+        if (!pixels || !gba_mod_publish_foreign_background(kPluginId, pixels)) {
             sLastMediaId = 0xFFFF;
             return;
         }
@@ -205,6 +219,7 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
         sLastInvocation = state.invocation_id;
         sLastMediaId = state.media_id;
     }
+    sLastElapsedVblanks = state.elapsed_vblanks;
     // Savestate restore stops stream delivery but retains this capability.
     // The state epoch changes, so start the bounded source again for the
     // restored active scene. Also start it after an ordinary inactive period.
