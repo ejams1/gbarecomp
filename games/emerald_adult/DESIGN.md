@@ -63,3 +63,36 @@ The pinned mGBA scene profile `20261026T120201Z-verify-08612fef` passed smoke an
 With no mod catalog or selected package, the final host ran the deterministic 780-frame title route with `GBARECOMP_SELFHEAL_RECOMPILE=0` and a 2 GiB container limit. It completed in 1.289 seconds (about 605 guest FPS), produced the title capture, and reported no unmapped accesses. Seventeen static-coverage gaps used the Stage-1 interpreter bridge (4,746,181 interpreted instructions); this preserves the ROM fallback. A separate default self-heal attempt reached 14.6 GiB during this route and was stopped before exhausting host memory. Dynamic self-heal memory use remains a limitation for longer host runs.
 
 The observer is read-only and its disabled path returns before reading guest memory or publishing pixels. No active-scene host replacement trace is claimed here: the GBA ABI/timeline/restore trace is qualified under mGBA, while package-selected host playback belongs to M5-3. Package absence leaves the host's ROM renderer in control.
+
+## M5-3 package playback
+
+The trusted plugin resolves `manifest.json`, every frame chunk, and the PCM file
+through `gba_mod_required_asset_path` for the committed `adult.gallery-media`
+feature. The runtime rechecks each declaration's exact size and SHA-1 when a
+trusted plugin resolves it. The player then validates the M5-5 JSON schema,
+profile (240x160, 160x90, or 90x160), output canvas (240x160 BGR555LE), chunk
+coverage, little-endian pixel values, mono S16LE/65536-Hz audio, guest VBlank
+boundaries, rounded sample boundaries, scene/media IDs, and the media size/file
+bounds before activating the stream. Media paths are never built from manifest
+strings; filenames are converted to declared package-asset IDs and resolved by
+the runtime API.
+
+Only the selected package's one scene is resident. It is bounded by the media
+pipeline's 16-MiB expanded limit, 12 frames, and 16 media files. Loading and
+validation happen during trusted activation, before the guest scene runs. The
+per-frame host callback publishes an already-decoded immutable BGR555 frame;
+the audio pull callback only copies from immutable PCM, advances an atomic
+sample cursor, and writes silence when the guest's music option is off. It does
+no file I/O, allocation, locking, or decoding. Guest elapsed VBlanks select
+frame and sample positions, so pause/fast-forward/loop behavior follows guest
+time. Savestate epochs and backward elapsed ticks republish and seek even when
+the invocation ID is reused.
+
+Audio policy: when guest music is enabled during an active media scene, the
+scene's packaged soundtrack replaces the full native GBA audio mix to avoid
+playing two soundtracks at once. This also attenuates guest sound effects for
+that scene because the current host API exposes one native gain for the full
+mix. When guest music is disabled, package audio is silent and native GBA audio
+stays at full gain. The SDL/host volume is applied after both paths are mixed.
+Invalid, absent, stale, wrong-target, or corrupt media logs a diagnostic and
+keeps the ROM presentation path available.

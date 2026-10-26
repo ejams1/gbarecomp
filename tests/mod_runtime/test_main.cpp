@@ -548,6 +548,11 @@ int main() {
     if (!packaged_video || fs::path(packaged_video) !=
             package / "video_frames_audio.bin")
         return fail("committed packaged video/audio was not resolved from the package");
+    if (!write_text(package / "video_frames_audio.bin", "tampered after commit") ||
+        gba_mod_required_asset_path("test.adaptive-view", "coast-video") ||
+        !write_text(package / "video_frames_audio.bin", packaged_video_payload) ||
+        !gba_mod_required_asset_path("test.adaptive-view", "coast-video"))
+        return fail("committed package asset resolver did not recheck tampered bytes");
 
     // Only the committed plugin can replace the PPU-owned presentation
     // pointer. Its address is not copied or transformed by the runtime.

@@ -123,6 +123,7 @@ gbarecomp_add_runtime_target(EmeraldAdultHost
 target_sources(EmeraldAdultHost PRIVATE
     src/main.cpp
     src/scene_media_observer.cpp
+    src/gallery_media_package.cpp
     "${_bios_cpp}"
     "${_bios_dispatch}")
 target_compile_definitions(EmeraldAdultHost PRIVATE
@@ -135,3 +136,12 @@ if(EXISTS "${_data_symbol_map}")
     target_sources(EmeraldAdultHost PRIVATE "${_data_symbol_map}")
 endif()
 target_compile_features(EmeraldAdultHost PRIVATE cxx_std_20)
+
+add_executable(gallery_media_package_tests
+    tests/gallery_media_package_tests.cpp
+    src/gallery_media_package.cpp)
+target_include_directories(gallery_media_package_tests PRIVATE
+    src "${GBARECOMP_ROOT}/src/runtime")
+target_compile_features(gallery_media_package_tests PRIVATE cxx_std_20)
+enable_testing()
+add_test(NAME gallery_media_package_tests COMMAND gallery_media_package_tests)

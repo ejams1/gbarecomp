@@ -2273,7 +2273,40 @@ const char* mod_runtime_required_asset_path(const std::string& package_id,
     const auto package = runtime.committed_asset_paths.find(package_id);
     if (package == runtime.committed_asset_paths.end()) return nullptr;
     const auto asset = package->second.find(asset_id);
-    return asset == package->second.end() ? nullptr : asset->second.c_str();
+    if (asset == package->second.end()) return nullptr;
+    std::error_code ec;
+    const fs::path committed_path(asset->second);
+    const fs::path canonical_committed = fs::canonical(committed_path, ec);
+    if (ec || !fs::is_regular_file(canonical_committed, ec) || ec) return nullptr;
+    const auto versions = runtime.packages.find(package_id);
+    if (versions == runtime.packages.end()) return nullptr;
+    for (const auto& [version, installed] : versions->second) {
+        (void)version;
+        if (!target_matches(installed, runtime)) continue;
+        for (const PackageAsset& declared : installed.package_assets) {
+            if (declared.id != asset_id) continue;
+            const fs::path declared_path = installed.root / fs::path(declared.path);
+            std::error_code path_ec;
+            if (fs::canonical(declared_path, path_ec) != canonical_committed || path_ec)
+                continue;
+            if (fs::file_size(canonical_committed, ec) != declared.expected_size || ec)
+                return nullptr;
+            std::string digest;
+            if (!sha1_file(canonical_committed, digest, nullptr) || digest != declared.sha1)
+                return nullptr;
+            return asset->second.c_str();
+        }
+        for (const RequiredAsset& declared : installed.required_assets) {
+            if (declared.id != asset_id) continue;
+            if (fs::file_size(canonical_committed, ec) != declared.expected_size || ec)
+                return nullptr;
+            std::string digest;
+            if (!sha1_file(canonical_committed, digest, nullptr) || digest != declared.sha1)
+                return nullptr;
+            return asset->second.c_str();
+        }
+    }
+    return nullptr;
 }
 
 }  // namespace gbarecomp
