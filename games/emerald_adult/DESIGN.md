@@ -96,3 +96,13 @@ mix. When guest music is disabled, package audio is silent and native GBA audio
 stays at full gain. The SDL/host volume is applied after both paths are mixed.
 Invalid, absent, stale, wrong-target, or corrupt media logs a diagnostic and
 keeps the ROM presentation path available.
+
+The host's loopback TCP observer accepts `{"cmd":"gallery_media_status"}` and
+returns a read-only diagnostic object. Its `scene_id`, `media_id`,
+`frame_index`, `player_state`, `elapsed_vblanks`, `total_vblanks`, `loop_count`,
+`invocation_id`, and `flags` are copied from the current guest scene record;
+`backend`, `fallback_reason`, package/publish state, audio state, and
+`audio_cursor_samples` describe host presentation. This lets a harness compare
+guest progression across backend modes while separately checking whether the
+host actually published a matching frame. Querying status does not change guest
+state or activate a package.
