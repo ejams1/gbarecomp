@@ -5,7 +5,12 @@
 # and stays a separate process — see ../PRINCIPLES.md "zero copyleft
 # emulator dependencies in the native build".
 
-set(MGBA_ROOT "${CMAKE_SOURCE_DIR}/third_party/mgba" CACHE PATH
+cmake_minimum_required(VERSION 3.20)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_LIST_DIR)
+    project(gbarecomp_oracle LANGUAGES C CXX)
+endif()
+
+set(MGBA_ROOT "${CMAKE_CURRENT_LIST_DIR}/../third_party/mgba" CACHE PATH
     "Path to the mGBA source checkout used by the external oracle")
 set(MGBA_BUILD ${MGBA_ROOT}/build)
 set(MGBA_LIB   ${MGBA_BUILD}/libmgba.a)
@@ -29,6 +34,13 @@ target_include_directories(gbarecomp_oracle PRIVATE
 target_link_libraries(gbarecomp_oracle PRIVATE
     ${MGBA_LIB}
 )
+if(UNIX)
+    find_package(Threads REQUIRED)
+    find_package(ZLIB REQUIRED)
+    find_package(PNG REQUIRED)
+    target_link_libraries(gbarecomp_oracle PRIVATE
+        Threads::Threads ZLIB::ZLIB PNG::PNG ${CMAKE_DL_LIBS} m)
+endif()
 if(WIN32 OR MSYS)
     # mGBA's config.c pulls SHGetKnownFolderPath + CoTaskMemFree for
     # locating %APPDATA%, so we need ole32 + uuid on top of the
@@ -45,4 +57,6 @@ elseif(APPLE)
 endif()
 target_compile_definitions(gbarecomp_oracle PRIVATE
     M_CORE_GBA=1
+    MGBA_ORACLE_VERSION=\"0.10.5\"
+    MGBA_ORACLE_COMMIT=\"26b7884bc25a5933960f3cdcd98bac1ae14d42e2\"
 )
