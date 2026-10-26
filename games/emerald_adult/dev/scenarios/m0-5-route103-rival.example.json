@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "scenario": {
+    "name": "m0-5-route103-rival",
+    "source_path": "pokeemerald-modern-adult/tools/validation/scenarios/m0-13-starter-rival-battle-save.json",
+    "source_sha256": "c9bea9bfab8f81208e09dcd716c88602c1709bea0771744cf356ebbd2639f320",
+    "source_schema_version": 1,
+    "host_input_replay": {
+      "path": "gbarecomp/games/emerald_adult/tools/m0-5-route103.input.csv",
+      "sha256": "69f15c3f868d95b29040397f94d79f92edb6276fac02032a2d176361b06c78df"
+    }
+  },
+  "identity": {
+    "rom_sha1": "57d3561262bf5337293a2d31f6b79b5879f7cff7",
+    "bios_sha1": "300c20df6731a33952ded8c436f7f186d25d3492",
+    "host_sha256": "2176fd4068910723aa7b82b0088ea965de03056c562f11e19af36737b0f1fcc9",
+    "framework_commit": "e49cf34",
+    "game_commit": "6229013f8"
+  },
+  "environment": {
+    "rtc_epoch": 946684800,
+    "rng_policy": "Not explicitly seeded; RNG-dependent battle HP is recorded in docs/validation.md."
+  },
+  "snapshot": {
+    "local_path": "games/emerald_adult/local/saves/m0-5-post-rival.state",
+    "sha256": "5b7f64c840534887533b0a3e160a8683a32be354c877ad3917c40ec7601f6602",
+    "bytes": 684524,
+    "format": "gbarecomp-machine-state"
+  },
+  "expected_state": {
+    "map": {"name": "Route 103"},
+    "position": {"x": 10, "y": 4},
+    "flags": ["FLAG_DEFEATED_RIVAL_ROUTE103"],
+    "party": [{"species": "Torchic", "level": 6, "hp": 3, "max_hp": 21}],
+    "game_time": {"hours": 0, "minutes": 25},
+    "rng_state": null
+  },
+  "interfaces": {
+    "native_load": "--load-state <path>",
+    "cartridge_save": "Flash1M 128 KiB via --save; load in a fresh host process using the same --save path and select Continue."
+  }
+}
