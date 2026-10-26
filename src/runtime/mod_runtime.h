@@ -31,9 +31,10 @@ void mod_runtime_activate_plugins();
 
 const RecompLauncherCModProvider* mod_runtime_launcher_provider();
 
-// Returns the locally-selected, hash-verified path for an asset declared by
-// an enabled package after a successful commit. The pointer is owned by the
-// mod runtime and remains valid until its next initialize/commit cycle.
+// Returns the hash-verified path for an external [[asset]] or archive-contained
+// [[package_asset]] declared by an enabled package after a successful commit.
+// The pointer is owned by the mod runtime and remains valid until its next
+// initialize/commit cycle.
 const char* mod_runtime_required_asset_path(const std::string& package_id,
                                             const std::string& asset_id);
 

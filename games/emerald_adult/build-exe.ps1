@@ -46,19 +46,21 @@ function Read-RomPin {
 function Write-RomPin {
     param([string]$Path, [string]$Sha1)
     $content = [IO.File]::ReadAllText($Path)
-    $section = [regex]::Match($content, '(?ms)^\[identity\]\s*(?<body>.*?)(?=^\[|\z)')
-    if (-not $section.Success) { throw "Missing [identity] section in $Path." }
-    $body = $section.Groups["body"].Value
-    $pinMatches = [regex]::Matches($body, '(?m)^(\s*sha1\s*=\s*")[0-9a-fA-F]{40}("\s*(?:#.*)?)$')
-    if ($pinMatches.Count -ne 1) { throw "Expected exactly one identity.sha1 in $Path; found $($pinMatches.Count)." }
-    $pinPattern = [regex]'(?m)^(\s*sha1\s*=\s*")[0-9a-fA-F]{40}("\s*(?:#.*)?)$'
-    $newBody = $pinPattern.Replace($body, [System.Text.RegularExpressions.MatchEvaluator]{
-        param($match)
-        return $match.Groups[1].Value + $Sha1 + $match.Groups[2].Value
-    })
-    $newContent = $content.Substring(0, $section.Groups["body"].Index) + $newBody +
-        $content.Substring($section.Groups["body"].Index + $section.Groups["body"].Length)
-    [IO.File]::WriteAllText($Path, $newContent, [Text.UTF8Encoding]::new($false))
+    foreach ($name in @("identity", "rom")) {
+        $section = [regex]::Match($content, "(?ms)^\[$name\]\s*(?<body>.*?)(?=^\[|\z)")
+        if (-not $section.Success) { throw "Missing [$name] section in $Path." }
+        $body = $section.Groups["body"].Value
+        $pinMatches = [regex]::Matches($body, '(?m)^(\s*sha1\s*=\s*")[0-9a-fA-F]{40}("\s*(?:#.*)?)$')
+        if ($pinMatches.Count -ne 1) { throw "Expected exactly one $name.sha1 in $Path; found $($pinMatches.Count)." }
+        $pinPattern = [regex]'(?m)^(\s*sha1\s*=\s*")[0-9a-fA-F]{40}("\s*(?:#.*)?)$'
+        $newBody = $pinPattern.Replace($body, [System.Text.RegularExpressions.MatchEvaluator]{
+            param($match)
+            return $match.Groups[1].Value + $Sha1 + $match.Groups[2].Value
+        })
+        $content = $content.Substring(0, $section.Groups["body"].Index) + $newBody +
+            $content.Substring($section.Groups["body"].Index + $section.Groups["body"].Length)
+    }
+    [IO.File]::WriteAllText($Path, $content, [Text.UTF8Encoding]::new($false))
 }
 
 function Assert-GeneratedPath {
@@ -128,9 +130,11 @@ try {
     $biosOutput = Join-Path $hostRoot "generated_bios"
     $hostBuild = Join-Path $hostRoot "build-pipeline"
     $importScript = Join-Path $hostRoot "tools/import-symbols.ps1"
+    $sceneStateGenerator = Join-Path $hostRoot "tools/generate-scene-state-address.py"
+    $sceneStateAddressHeader = Join-Path $hostRoot "generated/host_scene_state_address.h"
     $pythonImporter = Join-Path $frameworkRoot "tools/symbol_import/import_decomp_symbols.py"
 
-    foreach ($required in @($gameConfig, $bios, $biosConfig, $importScript, $pythonImporter)) {
+    foreach ($required in @($gameConfig, $bios, $biosConfig, $importScript, $pythonImporter, $sceneStateGenerator)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required pipeline input is missing: $required"
         }
@@ -186,7 +190,7 @@ try {
         $script:NativeExitCode = $LASTEXITCODE
         throw "Unable to read the framework Git revision."
     }
-    $frameworkStatus = (& git -C $frameworkRoot status --porcelain).Trim()
+    $frameworkStatus = (& git -C $frameworkRoot status --porcelain | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) {
         $script:NativeExitCode = $LASTEXITCODE
         throw "Unable to inspect framework working-tree state."
@@ -288,6 +292,7 @@ try {
         host_docker_image_id = $hostDockerImageId
         host_tool_versions = $hostToolInfo
         import_manifest_sha256 = $importManifestSha256
+        scene_state_generator_sha256 = Get-Hash $sceneStateGenerator SHA256
         base_config_sha256 = Get-Hash $gameConfig SHA256
         bios_config_sha256 = Get-Hash $biosConfig SHA256
     }
@@ -311,6 +316,7 @@ try {
     }
     if (-not $reuseGenerated) {
         Remove-StaleGeneratedOutputs -Paths @($cartOutput, $biosOutput, $hostBuild) -HostRoot $hostRoot
+        New-Item -ItemType Directory -Force -Path $cartOutput, $biosOutput | Out-Null
         Invoke-Native docker @(
             "run", "--rm", "--mount", $mount, "-w", "/workspace/gbarecomp",
             $HostDockerImage, $recompilerContainerPath,
@@ -348,6 +354,14 @@ try {
             (($generationRecord | ConvertTo-Json -Depth 6) + [Environment]::NewLine),
             [Text.UTF8Encoding]::new($false))
     }
+
+    # Cartridge generation replaces the entire generated directory. Emit the
+    # derived scene-state header after that step so a clean regeneration keeps it.
+    Invoke-Native python @(
+        $sceneStateGenerator,
+        "--symbols", (Join-Path $symbolsDir "imported_data_symbols.tsv"),
+        "--out", $sceneStateAddressHeader
+    ) "Resolve the versioned guest scene-state symbol from matching ELF metadata"
 
     Invoke-Native docker @(
         "run", "--rm", "--mount", $mount, "-w", "/workspace/gbarecomp/games/emerald_adult",
