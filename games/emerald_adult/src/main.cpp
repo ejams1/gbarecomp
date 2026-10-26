@@ -30,6 +30,7 @@ int main(int argc, char** argv) {
     gbarecomp::RunOptions options;
     options.builtin_game_name = "Pokemon Modern Emerald";
     options.builtin_rom_sha1 = GBARECOMP_EMERALD_ROM_SHA1;
+    options.mod_game_id = "pokemon_modern_emerald";
     options.default_game_config_path = GBARECOMP_DEFAULT_GAME_CONFIG;
     options.strict_bios_sha1 = true;
     options.strict_rom_sha1 = true;

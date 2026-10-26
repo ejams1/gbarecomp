@@ -143,6 +143,34 @@ SHA-1 values; missing files and hash mismatches stop startup with a specific
 diagnostic. The generated directories stay ignored. CMake links sharded
 cartridge code, BIOS translation and the data symbol map when present.
 
+### Optional gallery video package
+
+The native host accepts media packages built from the game repository's
+`tools/gallery/build_host_media.py` outputs. That pipeline supports source
+videos at 240x160, 160x90, and 90x160; it converts each to 240x160 BGR555LE
+frames with black bars where needed and creates mono S16 PCM matched to the
+guest VBlank timeline. The GBA fallback continues to play without host media.
+
+After generating an M5-5 output directory, create a data-only package and give
+it the license that applies to those derived outputs:
+
+```powershell
+python ./games/emerald_adult/tools/package_gallery_media.py `
+  ./pokeemerald-modern-adult/build/host-media/real-e2e/packages/neutral_coast `
+  ./pokeemerald-modern-adult/build/host-media/adult.gallery-media.gbamod `
+  --license-id PolyForm-Noncommercial-1.0.0 `
+  --license-file ./gbarecomp/LICENSE
+```
+
+In the host launcher's Mods page, install the `.gbamod`, leave the feature off
+unless desired, then select it and use **Play/Commit**. The package targets the
+`pokemon_modern_emerald` game ID and ROM SHA-1 pinned in `emerald.toml`. Its
+frame chunks, audio, and provenance manifest are verified when installed and
+when the catalog is loaded. To update media, build a new package version with
+`--version`, install it through Mods, select it, and commit again. With the
+package absent or its feature disabled, ordinary
+ROM playback remains available.
+
 ## Generation record and observed coverage
 
 The checked-in `emerald.toml` pins ROM SHA-1
