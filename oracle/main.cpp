@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <limits>
 #include <cerrno>
+#include <new>
 #include <unordered_map>
 #include <string>
 #include <string_view>
@@ -348,9 +349,14 @@ struct Oracle {
     std::vector<uint8_t> save_export;
     bool save_import_active = false;
     bool save_export_active = false;
+    // Exactly one opaque mGBA core state, retained only for this process.
+    std::vector<uint8_t> emulator_state;
+    uint64_t emulator_state_id = 0;
+    uint64_t emulator_state_sequence = 0;
 
     static constexpr std::size_t kMaxSaveBytes = 0x20000;
     static constexpr std::size_t kSaveChunkBytes = 2048;
+    static constexpr std::size_t kMaxEmulatorStateBytes = 4 * 1024 * 1024;
     static constexpr uint64_t kMaxFrameBatch = 3600;
 
     static void frame_ended(void* context) {
@@ -441,6 +447,31 @@ struct Oracle {
         }
         save_export_active = true;
         return true;
+    }
+
+    bool save_emulator_state() {
+        if (!core) return false;
+        const std::size_t size = core->stateSize(core);
+        if (size == 0 || size > kMaxEmulatorStateBytes) return false;
+        std::vector<uint8_t> next;
+        try {
+            next.resize(size);
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+        if (!core->saveState(core, next.data())) return false;
+        emulator_state.swap(next);
+        ++emulator_state_sequence;
+        if (emulator_state_sequence == 0) ++emulator_state_sequence;
+        emulator_state_id = emulator_state_sequence;
+        return true;
+    }
+
+    bool load_emulator_state(uint64_t state_id) {
+        if (!core || state_id == 0 || state_id != emulator_state_id ||
+            emulator_state.empty() ||
+            emulator_state.size() != core->stateSize(core)) return false;
+        return core->loadState(core, emulator_state.data());
     }
 
     // Drive mGBA's post-reset CPU state to match real ARM7TDMI
@@ -729,12 +760,14 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
             "\"max_request_bytes\":8192,\"max_memory_read_bytes\":4096,"
             "\"max_audio_capture_samples\":16384,\"max_frame_batch\":%llu,"
             "\"max_audio_queue_samples\":%llu,\"max_save_bytes\":%llu,"
-            "\"save_chunk_bytes\":%llu,\"state_api\":\"diagnostic-register-memory-injection-only\"}",
+            "\"save_chunk_bytes\":%llu,\"max_emulator_state_bytes\":%llu,"
+            "\"emulator_state_slots\":1,\"state_api\":\"mcore-in-memory-single-slot-v1\"}",
             MGBA_ORACLE_VERSION, MGBA_ORACLE_COMMIT,
             static_cast<unsigned long long>(Oracle::kMaxFrameBatch),
             static_cast<unsigned long long>(OracleAudioTap::kMaxQueuedSamples),
             static_cast<unsigned long long>(Oracle::kMaxSaveBytes),
-            static_cast<unsigned long long>(Oracle::kSaveChunkBytes));
+            static_cast<unsigned long long>(Oracle::kSaveChunkBytes),
+            static_cast<unsigned long long>(Oracle::kMaxEmulatorStateBytes));
         out = body;
         return;
     }
@@ -752,6 +785,32 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
             static_cast<unsigned long long>(o.key_reads), keys, vcount,
             o.skip_bios ? "hle" : "bios");
         out = body;
+        return;
+    }
+    if (starts("\"emu_state_save\"")) {
+        if (!o.save_emulator_state()) {
+            emit_error(out, "mGBA state save failed or exceeded the 4 MiB limit");
+            return;
+        }
+        char body[128];
+        std::snprintf(body, sizeof(body),
+            "{\"ok\":true,\"state_id\":%llu,\"size\":%llu}",
+            static_cast<unsigned long long>(o.emulator_state_id),
+            static_cast<unsigned long long>(o.emulator_state.size()));
+        out = body;
+        return;
+    }
+    if (starts("\"emu_state_load\"")) {
+        uint64_t state_id = 0;
+        if (!extract_uint(req, "\"state_id\"", state_id)) {
+            emit_error(out, "missing/invalid state_id");
+            return;
+        }
+        if (!o.load_emulator_state(state_id)) {
+            emit_error(out, "state_id is unavailable or mGBA state load failed");
+            return;
+        }
+        out = "{\"ok\":true}";
         return;
     }
     if (starts("\"emu_rtc_state\"")) {

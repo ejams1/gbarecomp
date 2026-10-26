@@ -43,6 +43,7 @@ as a compatibility alias for wrapper calls.
 
 The currently supported protocol endpoints are `ping`, `frame`,
 `emu_capabilities`, `emu_phase`, `emu_rtc_state`, `emu_set_rtc`,
+`emu_state_save`, `emu_state_load`,
 `emu_set_keys`, `emu_step_frames`, `emu_step`, `emu_step_to_vblank`,
 `emu_reset`, `emu_save_import_begin`, `emu_save_import_chunk`,
 `emu_save_import_commit`, `emu_save_export_begin`, `emu_save_export_chunk`,
@@ -89,6 +90,28 @@ cartridge savedata, call `emu_save_export_begin`, fetch the returned size in
 bounded `emu_save_export_chunk` calls, then call `emu_save_export_end`.
 Persistence is entirely the caller's responsibility; only a caller that owns
 the scratch path should write the exported bytes there.
+
+## In-memory emulator state
+
+`emu_state_save` asks the pinned mGBA core to serialize its current emulation
+state into one process-local buffer and returns an opaque numeric `state_id`
+and its byte size. `emu_state_load` takes that ID and restores the state into
+the same running core. Replacing a saved state invalidates the prior ID. The
+buffer is limited to 4 MiB, is never written to disk, and is freed when the
+oracle exits. Requests cannot provide file paths or state bytes. The command
+is available only when `emu_capabilities.state_api` is
+`mcore-in-memory-single-slot-v1`; its limit and slot count are also reported
+there.
+
+The state belongs to the one ROM loaded when the process starts. The oracle
+checks that the saved byte length still matches the current mGBA core before
+loading. Keep save and load within one process; IDs are not portable between
+oracle sessions or mGBA versions. mGBA core state restores guest/core fields,
+including CPU and frame progression, but not oracle wrapper observations such
+as `run_frame_calls`, audio capture history, or diagnostic counters. Compare
+`core_frame_counter` and guest memory/register observations for a round trip;
+do not expect wrapper call counts to rewind. `emu_reset` leaves the saved blob
+available, so a scenario can restore a checkpoint after reset if needed.
 
 ## Captures and diagnostics
 

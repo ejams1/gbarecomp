@@ -77,7 +77,10 @@ try {
         $caps = Send-Request $worker '{"emu_capabilities":true}'; Assert-Ok $caps 'capabilities'
         if ($caps.protocol -ne 2 -or $caps.mgba -ne '0.10.5' -or
             $caps.positive_key_mask -ne 1023 -or $caps.max_memory_read_bytes -ne 4096 -or
-            $caps.max_audio_capture_samples -ne 16384) { throw 'Capability identity/limit mismatch.' }
+            $caps.max_audio_capture_samples -ne 16384 -or
+            $caps.emulator_state_slots -ne 1 -or
+            $caps.max_emulator_state_bytes -ne 4194304 -or
+            $caps.state_api -ne 'mcore-in-memory-single-slot-v1') { throw 'Capability identity/limit mismatch.' }
         $compat = Send-Request $worker '{"cmd":"emu_phase"}'; Assert-Ok $compat 'cmd-field compatibility'
         $phase0 = Send-Request $worker '{"emu_phase":true}'; Assert-Ok $phase0 'initial phase'
         if ($phase0.reset_mode -ne $(if ($BiosPath) { 'bios' } else { 'hle' })) { throw 'Unexpected reset mode.' }
@@ -94,6 +97,25 @@ try {
             $phase.keys_pressed -ne $mask) {
             throw "Guest phase/input observations did not advance: calls=$($phase.run_frame_calls), core=$($phase.core_frame_counter), video=$($phase.video_frame_end_events), key_reads=$($phase.key_reads), keys=$($phase.keys_pressed), expected=$mask."
         }
+        $savedState = Send-Request $worker '{"emu_state_save":true}'; Assert-Ok $savedState 'in-memory emulator state save'
+        if ($savedState.state_id -le 0 -or $savedState.size -le 0 -or $savedState.size -gt 4194304) { throw 'Emulator state size/identity was invalid.' }
+        $savedRegs = Send-Request $worker '{"emu_registers":true}'; Assert-Ok $savedRegs 'registers before state round trip'
+        $advanced = Send-Request $worker '{"emu_step_frames":true,"count":2}'; Assert-Ok $advanced 'advance after state save'
+        $advancedPhase = Send-Request $worker '{"emu_phase":true}'; Assert-Ok $advancedPhase 'phase after state advance'
+        if ($advancedPhase.core_frame_counter -le $phase.core_frame_counter) { throw 'Guest core frame counter did not advance after state save.' }
+        $restored = Send-Request $worker ('{"emu_state_load":true,"state_id":' + $savedState.state_id + '}'); Assert-Ok $restored 'in-memory emulator state restore'
+        $restoredRegs = Send-Request $worker '{"emu_registers":true}'; Assert-Ok $restoredRegs 'registers after state restore'
+        $restoredPhase = Send-Request $worker '{"emu_phase":true}'; Assert-Ok $restoredPhase 'phase after state restore'
+        if ($restoredRegs.r15 -ne $savedRegs.r15 -or
+            $restoredPhase.core_frame_counter -ne $phase.core_frame_counter) {
+            throw 'mGBA core registers/frame counter did not round trip.'
+        }
+        $replacementState = Send-Request $worker '{"emu_state_save":true}'; Assert-Ok $replacementState 'replace in-memory emulator state'
+        if ($replacementState.state_id -eq $savedState.state_id) { throw 'Replacing the emulator state did not issue a new ID.' }
+        $replacedState = Send-Request $worker ('{"emu_state_load":true,"state_id":' + $savedState.state_id + '}')
+        if ($replacedState.ok) { throw 'Superseded in-memory state ID remained valid.' }
+        $staleState = Send-Request $worker '{"emu_state_load":true,"state_id":4294967295}'
+        if ($staleState.ok) { throw 'Unknown in-memory state ID was accepted.' }
         $epoch = if ($i -eq 0) { 1700000000000 } else { 1800000000000 }
         $setRtc = Send-Request $worker ('{"emu_set_rtc":true,"mode":"tick","epoch_ms":' + $epoch + '}'); Assert-Ok $setRtc 'tick RTC setup'
         $beforeRtc = Send-Request $worker '{"emu_rtc_state":true}'; Assert-Ok $beforeRtc 'tick RTC state'
