@@ -11,6 +11,8 @@ endif()
 
 set(GBARECOMP_GENERATED_BIOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_bios"
     CACHE PATH "Directory containing this game's generated BIOS sources")
+set(GBARECOMP_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated"
+    CACHE PATH "Directory containing this game's generated cartridge sources")
 set(_bios_cpp "${GBARECOMP_GENERATED_BIOS_DIR}/bios_recompiled.cpp")
 set(_bios_dispatch "${GBARECOMP_GENERATED_BIOS_DIR}/bios_dispatch_table.cpp")
 if(NOT EXISTS "${_bios_cpp}" OR NOT EXISTS "${_bios_dispatch}")
@@ -78,7 +80,7 @@ endif()
 
 include("${CMAKE_BINARY_DIR}/gbarecomp/runtime.cmake")
 gbarecomp_add_runtime_target(EmeraldAdultHost
-    GAME_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated"
+    GAME_GENERATED_DIR "${GBARECOMP_GENERATED_DIR}"
     DEBUG_PORT 19842
     WINDOW_TITLE "Pokemon Modern Emerald"
     DEFAULT_GAME_CONFIG_PATH "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml")
@@ -93,7 +95,7 @@ target_sources(EmeraldAdultHost PRIVATE
 
 # The shared helper currently wires executable shards, the dispatch table,
 # and PC symbols. Include the optional data-name table emitted for --data-symbols.
-set(_data_symbol_map "${CMAKE_CURRENT_SOURCE_DIR}/generated/data_symbol_map.cpp")
+set(_data_symbol_map "${GBARECOMP_GENERATED_DIR}/data_symbol_map.cpp")
 if(EXISTS "${_data_symbol_map}")
     target_sources(EmeraldAdultHost PRIVATE "${_data_symbol_map}")
 endif()

@@ -43,7 +43,58 @@ cmake --install (Join-Path $sdlSource "build")
 The framework's `external/arm-recomp-core` submodule must also be populated at
 the exact gitlink recorded by the checked-out framework commit.
 
-## Configure and build
+## Reproducible pipeline
+
+The one-command pipeline resolves the default sibling game repository from
+this file and passes paths containing spaces as native arguments. From the
+workspace root, launch it with:
+
+```powershell
+& "./gbarecomp/games/emerald_adult/build-exe.ps1"
+```
+
+You can also invoke the script by absolute path from another working
+directory. Install the pinned ROM image using the game repository's
+`docs/build-notes.md` instructions. The local machine needs PowerShell, Docker,
+and Python. The host image supplies the pinned Debian,
+CMake, Clang, Ninja and SDL2 toolchain. Copy the user-provided BIOS to
+`gbarecomp/bios/gba_bios.bin`; BIOS files are not distributed.
+
+For the first build, or after intentionally changing the ROM, ELF/map, framework
+revision, compiler image, or importer output, explicitly regenerate from the
+ROM produced by the pinned build:
+
+```powershell
+& "./gbarecomp/games/emerald_adult/build-exe.ps1" -RegenerateIdentity
+```
+
+The script runs `make modern` in `adult-emerald-build:r63-libpng`, verifies the
+identity against `emerald.toml`, captures ELF sections/symbols, imports symbol
+and data-symbol tables, builds the recompiler CLI, generates BIOS and cartridge
+translation, then configures and builds `EmeraldAdultHost`. Regeneration updates
+the hand-maintained ROM SHA-1 from the built ROM and the generated import
+overlay from the matching ELF/map. It records the Docker image ID, framework
+commit, recompiler version/hash, input hashes, generator fingerprint, and
+executable hash under ignored `symbols/build-manifest.json`. The headless Linux
+executable and one-frame startup smoke capture are under ignored
+`build-pipeline/`. The existing M0-5 title-menu route remains the longer
+playability check.
+Use the Windows toolchain below if you also need a native Windows executable
+with a visible window.
+
+Normal rebuilds use the same command without the switch:
+
+```powershell
+& "./gbarecomp/games/emerald_adult/build-exe.ps1"
+```
+
+If the ROM or derived import metadata has drifted, a normal build prints old
+and new hashes and stops. It prints the exact `-RegenerateIdentity` command to
+review and run. Generated cartridge/BIOS sources and the host CMake cache are
+removed only after resolved paths are checked to stay in this host's three
+generated-output directories. `local/saves/` is never part of cleanup.
+
+## Manual configure and build
 
 First build the recompiler CLI from the `gbarecomp` root:
 
