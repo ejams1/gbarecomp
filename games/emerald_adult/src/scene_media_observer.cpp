@@ -1,6 +1,7 @@
 #include "scene_media_observer.h"
 
 #include "gba_bus.h"
+#include "mod_audio.h"
 #include "mod_runtime.h"
 #include "runtime.h"
 #include "runtime_bus_bridge.h"
@@ -89,8 +90,27 @@ bool sEnabled;
 std::uint16_t sLastMediaId = 0xFFFF;
 std::uint32_t sLastInvocation = 0;
 std::uint64_t sLastStateEpoch = ~std::uint64_t{0};
+GBAModAudioStream sAudioStream = GBA_MOD_AUDIO_STREAM_INVALID;
+bool sStreamPlaying = false;
+
+// The initial trusted shell exercises the bounded pull-stream lifecycle while
+// contributing no sound over the guest's existing music and effects.
+std::size_t read_silence(void*, std::int16_t* dst, std::size_t max_frames) {
+    if (!dst || max_frames > GBA_MOD_AUDIO_MAX_STREAM_CALLBACK_FRAMES) return 0;
+    for (std::size_t i = 0; i < max_frames; ++i) dst[i] = 0;
+    return max_frames;
+}
+
+void stop_stream() {
+    if (sAudioStream != GBA_MOD_AUDIO_STREAM_INVALID && sStreamPlaying)
+        gba_mod_audio_stream_stop(sAudioStream);
+    sStreamPlaying = false;
+}
 
 void reset_media() {
+    // The runtime retires stream capabilities before reset callbacks.
+    sAudioStream = GBA_MOD_AUDIO_STREAM_INVALID;
+    sStreamPlaying = false;
     sEnabled = false;
     sLastMediaId = 0xFFFF;
     sLastInvocation = 0;
@@ -99,6 +119,20 @@ void reset_media() {
 }
 
 void activate_media() {
+    sAudioStream = gba_mod_audio_stream_register_s16_mono(read_silence, nullptr);
+    if (sAudioStream == GBA_MOD_AUDIO_STREAM_INVALID ||
+        !gba_mod_audio_stream_set_enabled(sAudioStream, 1) ||
+        !gba_mod_audio_stream_play(sAudioStream, 100)) {
+        if (sAudioStream != GBA_MOD_AUDIO_STREAM_INVALID) {
+            gba_mod_audio_stream_stop(sAudioStream);
+            gba_mod_audio_stream_set_enabled(sAudioStream, 0);
+        }
+        sAudioStream = GBA_MOD_AUDIO_STREAM_INVALID;
+        sStreamPlaying = false;
+        sEnabled = false;
+        return;
+    }
+    sStreamPlaying = true;
     sEnabled = true;
     sLastMediaId = 0xFFFF;
     sLastInvocation = 0;
@@ -136,12 +170,14 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
     GbaHostSceneState state{};
     if (!read_scene_state(state) || state.version != 1 || state.size != sizeof(state) ||
         state.invocation_id == 0 || (state.flags & ~kHostStateKnownFlags) != 0) {
+        stop_stream();
         gba_mod_clear_foreign_background();
         sLastMediaId = 0xFFFF;
         return;
     }
     const bool active = (state.flags & kHostStateActive) != 0;
     if (!active || !(state.flags & kHostStateFrameVisible)) {
+        stop_stream();
         gba_mod_clear_foreign_background();
         sLastMediaId = 0xFFFF;
         return;
@@ -152,10 +188,12 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
         state.player_state > 5 ||
         state.elapsed_vblanks >= (static_cast<std::uint64_t>(state.loop_count) + 1) *
                                      state.total_vblanks) {
+        stop_stream();
         gba_mod_clear_foreign_background();
         sLastMediaId = 0xFFFF;
         return;
     }
+    const bool restored = frame->state_epoch != sLastStateEpoch;
     if (frame->state_epoch != sLastStateEpoch || state.invocation_id != sLastInvocation ||
         state.media_id != sLastMediaId) {
         const auto& pixels = kNeutralCoastFrames[state.frame_index];
@@ -166,6 +204,13 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
         sLastStateEpoch = frame->state_epoch;
         sLastInvocation = state.invocation_id;
         sLastMediaId = state.media_id;
+    }
+    // Savestate restore stops stream delivery but retains this capability.
+    // The state epoch changes, so start the bounded source again for the
+    // restored active scene. Also start it after an ordinary inactive period.
+    if (!sStreamPlaying || restored) {
+        if (gba_mod_audio_stream_play(sAudioStream, 100))
+            sStreamPlaying = true;
     }
 }
 }  // namespace
