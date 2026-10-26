@@ -1923,12 +1923,14 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     g_runtime_observed_pc_count = static_cast<unsigned>(
         bus.audio().shadow_hook_pcs(g_runtime_observed_pcs,
                                     RUNTIME_MAX_OBSERVED_PCS));
-    g_runtime_dispatch_observer = g_runtime_observed_pc_count
-        ? [](uint32_t pc, int thumb) {
-              if (gba::GbaBus* b = gbarecomp::active_bus())
-                  b->audio().shadow_driver_tick(pc, thumb != 0);
-          }
-        : nullptr;
+    if (g_runtime_observed_pc_count) {
+        g_runtime_dispatch_observer = [](uint32_t pc, int thumb) {
+            if (gba::GbaBus* b = gbarecomp::active_bus())
+                b->audio().shadow_driver_tick(pc, thumb != 0);
+        };
+    } else {
+        g_runtime_dispatch_observer = nullptr;
+    }
     if (!args.quiet && bus.matrix().active()) {
         std::printf(
             "matrix_mapper=active physical_size=%zu aperture=%zu page_size=%zu\n",

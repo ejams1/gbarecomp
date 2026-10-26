@@ -151,6 +151,43 @@ file picker where available. Only the chosen local path is written to
 package or repository. A stale remembered path is revalidated before every
 commit.
 
+### Package-contained media
+
+Data shipped inside the archive uses `[[package_asset]]`, separate from
+user-owned `[[asset]]`. The runtime validates each declared path, exact size,
+and SHA-1 during installation and catalog scan. The selected feature must also
+target the running game and be successfully committed before
+`gba_mod_required_asset_path(package_id, asset_id)` returns its installed path.
+Package-contained paths resolve beneath the installed version directory;
+plugins must not guess filesystem locations.
+
+```toml
+[[package_asset]]
+feature = "gallery-media"
+id = "coast-frames"
+path = "frames_000.bgr555le"
+sha1 = "0123456789abcdef0123456789abcdef01234567"
+size = 230400
+purpose = "Neutral 240x160 BGR555LE video frames."
+```
+
+Paths must be safe relative archive paths. Duplicate IDs and paths, missing
+files, size mismatches, and hash mismatches reject the package. Existing
+`[[asset]]` declarations continue to mean external files and are never copied
+into an archive.
+
+The Emerald host's `tools/package_gallery_media.py` turns one M5-5 output
+directory into a reproducible data-only `.gbamod`. It carries the generator's
+JSON manifest (source hashes, FFmpeg/ffprobe versions and hashes, input profile,
+frame/audio formats, timeline, and GBA fallback cost), frame chunks, PCM audio,
+and an explicit license text. The package builder pins the program ID and ROM
+SHA-1 from `emerald.toml`, uses the registered M5-2 plugin ID, leaves the
+feature disabled by default, and enforces the runtime's 4096-entry/256-MiB
+expanded limits. Generated frames use a 240x160 host canvas for native 240x160,
+160x90 landscape, and 90x160 portrait video; aspect ratio is preserved with
+black bars. GBA video audio remains the existing fallback behavior; packaged
+PCM is for the optional native host.
+
 The target combines a stable game ID with the same lowercase ROM SHA-1 used by
 the runtime's stock-image gate. Resolution fails before boot if an enabled
 feature targets another image, names a missing trusted plugin, or collides with
