@@ -171,6 +171,41 @@ when the catalog is loaded. To update media, build a new package version with
 package absent or its feature disabled, ordinary
 ROM playback remains available.
 
+### Backend parity trace
+
+The optional host media backend can be checked against canonical guest scene
+records captured by the required BIOS mGBA runner. First build the current host
+and create the meadow/coast `.gbamod` files as above. Then run
+`tools/run_host_media_trace.py` with those packages, the pinned host executable,
+ROM, BIOS, and the `m5-6-gba-baseline.json` report produced by the game-side
+`check_backend_parity.py`. The runner starts isolated headless host processes
+through the existing TCP debug interface for package enabled, disabled, absent,
+and wrong-target modes. It compares the guest scene fields, checks host frame and
+audio status, exercises a native host savestate restore, and writes a host trace
+that the game-side checker can compare using `--host-trace`.
+
+For example, with the generated host at `build-m5-3-verification` and both
+package archives under `build/host-media/m5-3-packages`:
+
+```powershell
+python ./games/emerald_adult/tools/run_host_media_trace.py `
+  --workspace-root M:/other-projects/pokemon-projects `
+  --host ./games/emerald_adult/build-m5-3-verification/EmeraldAdultHost `
+  --package-meadow ./build/host-media/m5-3-packages/neutral_meadow.gbamod `
+  --package-coast ./build/host-media/m5-3-packages/neutral_coast.gbamod `
+  --rom ../pokeemerald-modern-adult/pokeemerald_modern.gba `
+  --bios ./bios/gba_bios.bin `
+  --gba-baseline ../pokeemerald-modern-adult/tools/validation/.local/reports/m5-6-gba-baseline.json `
+  --out ./build/host-media/m5-6-host-trace.json
+```
+
+The host test uses the framework's validation-only `GBARECOMP_CHEATS` frame
+hook to replay captured 32-byte scene-state records; it does not write guest
+state through the production media plugin. The guest reference reports remain
+the authority for real scene progression, gallery unlock timing, and savedata.
+The host trace records the ROM and host executable hashes so it must be
+regenerated after either build changes.
+
 ## Generation record and observed coverage
 
 The checked-in `emerald.toml` pins ROM SHA-1

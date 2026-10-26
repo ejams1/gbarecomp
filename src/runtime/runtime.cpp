@@ -1627,17 +1627,22 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     if (mods_ready) {
         if (!mod_runtime_commit(args.rom, &err)) {
             std::fprintf(stderr,
-                         "[gbarecomp:runtime] cannot launch with selected "
-                         "mods: %s\n", err.c_str());
-            return 1;
+                         "[gbarecomp:runtime] selected mods were rejected; "
+                         "continuing with ROM fallback: %s\n", err.c_str());
+            // A stale, wrong-target, or otherwise invalid persisted mod
+            // selection must never make the underlying game unlaunchable.
+            // The failed commit has cleared the committed asset/capability
+            // set, and plugins are not activated on this path.
+            mods_ready = false;
+        } else {
+            mod_runtime_activate_plugins();
+            if (!args.internal_resolution_set && gba_mod_internal_resolution() > 0)
+                args.internal_resolution = gba_mod_internal_resolution();
+            // Retain catalog defaults unless the title exposes and the player
+            // explicitly selects a Display view mode.
+            if (mod_controls_view)
+                args.resize_view = gba_mod_adaptive_view_enabled() != 0;
         }
-        mod_runtime_activate_plugins();
-        if (!args.internal_resolution_set && gba_mod_internal_resolution() > 0)
-            args.internal_resolution = gba_mod_internal_resolution();
-        // Retain catalog defaults unless the title exposes and the player
-        // explicitly selects a Display view mode.
-        if (mod_controls_view)
-            args.resize_view = gba_mod_adaptive_view_enabled() != 0;
     }
 #endif
     // Declarative mod cheats ([[cheat]] records of enabled features). They

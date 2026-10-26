@@ -161,6 +161,11 @@ target the running game and be successfully committed before
 Package-contained paths resolve beneath the installed version directory;
 plugins must not guess filesystem locations.
 
+At normal runtime startup, a stale, invalid, or wrong-target persisted
+selection is rejected with a diagnostic and the runtime continues with the base
+ROM and no selected plugins. The launcher still refuses an explicit
+Play/Commit action until the user resolves the displayed package diagnostics.
+
 ```toml
 [[package_asset]]
 feature = "gallery-media"
