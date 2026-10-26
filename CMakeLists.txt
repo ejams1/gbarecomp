@@ -879,7 +879,15 @@ add_test(NAME controller_mapping_tests COMMAND controller_mapping_tests)
 
 add_executable(tcp_debug_server_agent_contract_tests
     tests/debug/tcp_debug_server_agent_contract_test.cpp)
-target_link_libraries(tcp_debug_server_agent_contract_tests PRIVATE gbarecomp_debug)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    target_link_libraries(tcp_debug_server_agent_contract_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,gbarecomp_runtime,gbarecomp_debug,gbarecomp_recompile_core,gbarecomp_heal_gate,gbarecomp_gba,gbarecomp_armv4t>")
+else()
+    target_link_libraries(tcp_debug_server_agent_contract_tests PRIVATE
+        gbarecomp_runtime gbarecomp_debug)
+    set_property(TARGET tcp_debug_server_agent_contract_tests
+        PROPERTY LINK_INTERFACE_MULTIPLICITY 3)
+endif()
 add_test(NAME tcp_debug_server_agent_contract_tests
     COMMAND tcp_debug_server_agent_contract_tests)
 

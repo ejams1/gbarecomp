@@ -12,6 +12,17 @@
 #include <string>
 #include <thread>
 
+// This TCP contract test does not execute cartridge instructions, but linking
+// the arm runtime requires the per-game static dispatch table symbols.
+struct DispatchEntry {
+    std::uint32_t addr;
+    std::uint8_t thumb;
+    std::uint8_t resume;
+    void (*fn)(void);
+};
+extern "C" const DispatchEntry kDispatchTable[] = {{0, 0, 0, nullptr}};
+extern "C" const unsigned kDispatchTableLen = 0;
+
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
