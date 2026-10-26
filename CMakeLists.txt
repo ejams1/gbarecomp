@@ -877,6 +877,20 @@ add_executable(controller_mapping_tests tests/runtime/controller_mapping_test.cp
 target_include_directories(controller_mapping_tests PRIVATE src/runtime)
 add_test(NAME controller_mapping_tests COMMAND controller_mapping_tests)
 
+add_executable(tcp_debug_server_agent_contract_tests
+    tests/debug/tcp_debug_server_agent_contract_test.cpp)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    target_link_libraries(tcp_debug_server_agent_contract_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,gbarecomp_runtime,gbarecomp_debug,gbarecomp_recompile_core,gbarecomp_heal_gate,gbarecomp_gba,gbarecomp_armv4t>")
+else()
+    target_link_libraries(tcp_debug_server_agent_contract_tests PRIVATE
+        gbarecomp_runtime gbarecomp_debug)
+    set_property(TARGET tcp_debug_server_agent_contract_tests
+        PROPERTY LINK_INTERFACE_MULTIPLICITY 3)
+endif()
+add_test(NAME tcp_debug_server_agent_contract_tests
+    COMMAND tcp_debug_server_agent_contract_tests)
+
 add_executable(mod_audio_tests
     tests/mod_audio/test_main.cpp
     src/gba/mod_audio.cpp)
