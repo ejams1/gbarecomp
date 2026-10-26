@@ -2,18 +2,24 @@
 //
 // Embeds libmgba and exposes the `emu_*` / `read_emu_*` TCP command
 // set from ../TCP.md. Native gbarecomp speaks the matching `read_*`
-// commands; a diff harness sits on top, syncs via VBlank IRQ count
-// (NEVER raw frame index), and reports the first divergence.
+// commands; a diff harness uses the separately reported guest frame,
+// video-frame callback, and wrapper call observations to sync and report
+// the first divergence. Wrapper calls are not VBlank IRQ counts.
 //
 // This binary is the ONLY place libmgba may be linked. Per
 // PRINCIPLES.md, the native build has zero copyleft emulator deps.
 
 #include <cstdint>
 #include <cstddef>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
+#include <cerrno>
+#include <new>
+#include <unordered_map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,6 +35,7 @@
 #  include <arpa/inet.h>
 #  include <netinet/in.h>
 #  include <sys/socket.h>
+#  include <sys/time.h>
 #  include <unistd.h>
    using socket_t = int;
 #  define INVALID_SOCKET (-1)
@@ -49,14 +56,139 @@ extern "C" {
 
 namespace {
 
+// mGBA emits BIOS SWI and DMA diagnostics at informational levels, often on
+// every frame. Keep bounded agent-run reports useful by retaining errors and
+// exposing the full stream only when explicitly requested.
+void oracle_log(struct mLogger* logger, int category, enum mLogLevel level,
+                const char* format, va_list args) {
+    (void)logger;
+    (void)category;
+    if (std::getenv("GBA_ORACLE_VERBOSE") || level == mLOG_FATAL || level == mLOG_ERROR) {
+        std::vfprintf(stderr, format, args);
+        std::fputc('\n', stderr);
+    }
+}
+
+struct mLogger g_oracle_logger = {.log = oracle_log};
+
 // ─────────────────────────────────────────────────────────────────────
 // JSON micro-helpers
 // ─────────────────────────────────────────────────────────────────────
 
-// We hand-write JSON output because pulling in nlohmann/json or
-// similar for a tool that emits ~10 unique response shapes is
-// overkill. Requests are parsed with simple key-substring scans —
-// good enough for trusted, localhost-only traffic.
+// The protocol is a flat JSON object with scalar values. Parse and validate
+// the complete request before dispatch so command names/arguments cannot be
+// accidentally found inside an unrelated string value.
+
+struct JsonField {
+    enum class Kind { String, Number, Boolean, Null } kind = Kind::Null;
+    std::string value;
+};
+using JsonObject = std::unordered_map<std::string, JsonField>;
+
+void skip_space(std::string_view input, std::size_t& pos) {
+    while (pos < input.size() && (input[pos] == ' ' || input[pos] == '\t' ||
+           input[pos] == '\r' || input[pos] == '\n')) ++pos;
+}
+
+bool parse_json_string(std::string_view input, std::size_t& pos,
+                       std::string& value) {
+    if (pos >= input.size() || input[pos++] != '"') return false;
+    value.clear();
+    while (pos < input.size()) {
+        char c = input[pos++];
+        if (c == '"') return true;
+        if (static_cast<unsigned char>(c) < 0x20) return false;
+        if (c != '\\') { value.push_back(c); continue; }
+        if (pos >= input.size()) return false;
+        char escape = input[pos++];
+        switch (escape) {
+        case '"': case '\\': case '/': value.push_back(escape); break;
+        case 'b': value.push_back('\b'); break;
+        case 'f': value.push_back('\f'); break;
+        case 'n': value.push_back('\n'); break;
+        case 'r': value.push_back('\r'); break;
+        case 't': value.push_back('\t'); break;
+        case 'u': {
+            if (pos + 4 > input.size()) return false;
+            unsigned code = 0;
+            for (int i = 0; i < 4; ++i) {
+                char h = input[pos++];
+                int digit = h >= '0' && h <= '9' ? h - '0' :
+                    h >= 'a' && h <= 'f' ? h - 'a' + 10 :
+                    h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1;
+                if (digit < 0) return false;
+                code = (code << 4) | static_cast<unsigned>(digit);
+            }
+            if (code > 0x7F) return false;
+            value.push_back(static_cast<char>(code));
+            break;
+        }
+        default: return false;
+        }
+    }
+    return false;
+}
+
+bool parse_json_object(std::string_view input, JsonObject& fields,
+                       std::vector<std::string>* order = nullptr) {
+    fields.clear();
+    if (order) order->clear();
+    std::size_t pos = 0;
+    skip_space(input, pos);
+    if (pos >= input.size() || input[pos++] != '{') return false;
+    skip_space(input, pos);
+    if (pos < input.size() && input[pos] == '}') {
+        ++pos; skip_space(input, pos); return pos == input.size();
+    }
+    while (pos < input.size()) {
+        std::string key;
+        if (!parse_json_string(input, pos, key)) return false;
+        skip_space(input, pos);
+        if (pos >= input.size() || input[pos++] != ':') return false;
+        skip_space(input, pos);
+        JsonField field;
+        if (pos < input.size() && input[pos] == '"') {
+            field.kind = JsonField::Kind::String;
+            if (!parse_json_string(input, pos, field.value)) return false;
+        } else if (input.substr(pos, 4) == "true") {
+            field.kind = JsonField::Kind::Boolean; field.value = "true"; pos += 4;
+        } else if (input.substr(pos, 5) == "false") {
+            field.kind = JsonField::Kind::Boolean; field.value = "false"; pos += 5;
+        } else if (input.substr(pos, 4) == "null") {
+            field.kind = JsonField::Kind::Null; field.value = "null"; pos += 4;
+        } else {
+            std::size_t start = pos;
+            if (pos < input.size() && input[pos] == '-') ++pos;
+            if (pos >= input.size() || input[pos] < '0' || input[pos] > '9') return false;
+            if (input[pos] == '0') ++pos;
+            else while (pos < input.size() && input[pos] >= '0' && input[pos] <= '9') ++pos;
+            if (pos < input.size() && (input[pos] == '.' || input[pos] == 'e' || input[pos] == 'E')) return false;
+            field.kind = JsonField::Kind::Number;
+            field.value.assign(input.substr(start, pos - start));
+        }
+        if (fields.find(key) != fields.end()) return false;
+        if (order) order->push_back(key);
+        fields.emplace(std::move(key), std::move(field));
+        skip_space(input, pos);
+        if (pos < input.size() && input[pos] == '}') {
+            ++pos; skip_space(input, pos); return pos == input.size();
+        }
+        if (pos >= input.size() || input[pos++] != ',') return false;
+        skip_space(input, pos);
+    }
+    return false;
+}
+
+bool get_field(std::string_view req, std::string_view quoted_key,
+               JsonField& field) {
+    if (quoted_key.size() < 2 || quoted_key.front() != '"' || quoted_key.back() != '"') return false;
+    JsonObject fields;
+    if (!parse_json_object(req, fields)) return false;
+    auto it = fields.find(std::string(quoted_key.substr(1, quoted_key.size() - 2)));
+    if (it == fields.end()) return false;
+    field = it->second;
+    return true;
+}
 
 void json_emit_hex(std::string& out, const uint8_t* data, std::size_t n) {
     out.reserve(out.size() + n * 2 + 2);
@@ -70,27 +202,29 @@ void json_emit_hex(std::string& out, const uint8_t* data, std::size_t n) {
 }
 
 bool extract_uint(std::string_view req, std::string_view key, uint64_t& out) {
-    auto pos = req.find(key);
-    if (pos == std::string_view::npos) return false;
-    pos = req.find(':', pos);
-    if (pos == std::string_view::npos) return false;
-    ++pos;
-    while (pos < req.size() && (req[pos] == ' ' || req[pos] == '"')) ++pos;
+    JsonField field;
+    if (!get_field(req, key, field) ||
+        (field.kind != JsonField::Kind::Number && field.kind != JsonField::Kind::String)) return false;
+    std::string_view value = field.value;
+    if (value.empty() || value.front() == '-') return false;
     int base = 10;
-    if (pos + 1 < req.size() && req[pos] == '0' &&
-        (req[pos + 1] == 'x' || req[pos + 1] == 'X')) {
+    std::size_t pos = 0;
+    if (value.size() > 2 && value[0] == '0' &&
+        (value[1] == 'x' || value[1] == 'X')) {
         base = 16;
         pos += 2;
     }
     uint64_t v = 0;
     bool any = false;
-    while (pos < req.size()) {
-        char c = req[pos];
+    while (pos < value.size()) {
+        char c = value[pos];
         int digit;
         if (c >= '0' && c <= '9')      digit = c - '0';
         else if (base == 16 && c >= 'a' && c <= 'f') digit = c - 'a' + 10;
         else if (base == 16 && c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-        else break;
+        else return false;
+        if (v > (std::numeric_limits<uint64_t>::max() - static_cast<uint64_t>(digit)) /
+                    static_cast<uint64_t>(base)) return false;
         v = v * base + static_cast<uint64_t>(digit);
         any = true;
         ++pos;
@@ -104,12 +238,9 @@ bool extract_uint(std::string_view req, std::string_view key, uint64_t& out) {
 // into `out` bytes. Returns false if the key is absent or malformed.
 bool extract_hex_bytes(std::string_view req, std::string_view key,
                        std::vector<uint8_t>& out) {
-    auto pos = req.find(key);
-    if (pos == std::string_view::npos) return false;
-    pos = req.find(':', pos);
-    if (pos == std::string_view::npos) return false;
-    ++pos;
-    while (pos < req.size() && (req[pos] == ' ' || req[pos] == '"')) ++pos;
+    JsonField field;
+    if (!get_field(req, key, field) || field.kind != JsonField::Kind::String ||
+        field.value.size() > 8192 || (field.value.size() & 1)) return false;
     auto hex_digit = [](char c) -> int {
         if (c >= '0' && c <= '9') return c - '0';
         if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -117,15 +248,25 @@ bool extract_hex_bytes(std::string_view req, std::string_view key,
         return -1;
     };
     out.clear();
-    while (pos + 1 < req.size()) {
-        int hi = hex_digit(req[pos]);
-        if (hi < 0) break;  // closing quote or end
-        int lo = hex_digit(req[pos + 1]);
-        if (lo < 0) return false;  // odd nibble count
+    for (std::size_t pos = 0; pos < field.value.size(); pos += 2) {
+        int hi = hex_digit(field.value[pos]);
+        int lo = hex_digit(field.value[pos + 1]);
+        if (hi < 0 || lo < 0) return false;
         out.push_back(static_cast<uint8_t>((hi << 4) | lo));
-        pos += 2;
     }
     return true;
+}
+
+bool extract_string(std::string_view req, std::string_view key, std::string& out) {
+    JsonField field;
+    if (!get_field(req, key, field) || field.kind != JsonField::Kind::String) return false;
+    out = field.value;
+    return true;
+}
+
+bool field_exists(std::string_view req, std::string_view key) {
+    JsonField ignored;
+    return get_field(req, key, ignored);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -133,10 +274,12 @@ bool extract_hex_bytes(std::string_view req, std::string_view key,
 // ─────────────────────────────────────────────────────────────────────
 
 struct OracleAudioTap {
+    static constexpr std::size_t kMaxQueuedSamples = 262144;
     mAVStream stream{};
     std::vector<int16_t> mono;
     std::size_t read_index = 0;
     uint64_t samples_generated = 0;
+    uint64_t samples_dropped = 0;
     unsigned sample_rate = 32768;
 
     OracleAudioTap() {
@@ -148,6 +291,7 @@ struct OracleAudioTap {
         mono.clear();
         read_index = 0;
         samples_generated = 0;
+        samples_dropped = 0;
     }
 
     std::vector<int16_t> drain(std::size_t max) {
@@ -176,20 +320,159 @@ struct OracleAudioTap {
         auto* self = reinterpret_cast<OracleAudioTap*>(stream);
         int32_t mixed = (static_cast<int32_t>(left) +
                          static_cast<int32_t>(right)) / 2;
-        self->mono.push_back(static_cast<int16_t>(mixed));
         ++self->samples_generated;
+        if (self->mono.size() < kMaxQueuedSamples) {
+            self->mono.push_back(static_cast<int16_t>(mixed));
+        } else {
+            ++self->samples_dropped;
+        }
     }
 };
 
 struct Oracle {
     mCore*   core    = nullptr;
-    uint32_t vblanks = 0;     // VBlank events observed since reset
-    uint64_t frame   = 0;     // mCore frame counter mirror
+    bool skip_bios = false;
+    bool rtc_tick_driven = false;
+    int64_t rtc_epoch_ms = 946684800000LL;
+    int64_t rtc_requested_epoch_ms = 946684800000LL;
+    uint64_t frame_calls = 0;
+    uint64_t video_frame_ends = 0;
+    uint64_t key_reads = 0;
     uint64_t inst_count = 0;  // emu_step_inst calls since reset
     // mGBA renders the framebuffer into this buffer on each runFrame.
     // 240*160 pixels at BYTES_PER_PIXEL (default 4 = 32-bit ARGB).
     std::vector<uint32_t> video_buf;
     OracleAudioTap audio;
+    std::vector<uint8_t> save_import;
+    std::size_t save_import_expected = 0;
+    std::size_t save_import_received = 0;
+    std::vector<uint8_t> save_export;
+    bool save_import_active = false;
+    bool save_export_active = false;
+    // Exactly one opaque mGBA core state, retained only for this process.
+    std::vector<uint8_t> emulator_state;
+    uint64_t emulator_state_id = 0;
+    uint64_t emulator_state_sequence = 0;
+
+    static constexpr std::size_t kMaxSaveBytes = 0x20000;
+    static constexpr std::size_t kSaveChunkBytes = 2048;
+    static constexpr std::size_t kMaxEmulatorStateBytes = 4 * 1024 * 1024;
+    static constexpr uint64_t kMaxFrameBatch = 3600;
+
+    static void frame_ended(void* context) {
+        ++static_cast<Oracle*>(context)->video_frame_ends;
+    }
+
+    static void keys_read(void* context) {
+        ++static_cast<Oracle*>(context)->key_reads;
+    }
+
+    void configure_rtc() {
+        if (!core) return;
+        core->rtc.override = rtc_tick_driven ? RTC_FAKE_EPOCH : RTC_FIXED;
+        core->rtc.value = rtc_epoch_ms;
+    }
+
+    bool set_rtc(const std::string& mode, uint64_t epoch_ms) {
+        if ((mode != "fixed" && mode != "tick") ||
+            epoch_ms > 253402300799000ULL) return false;
+        rtc_tick_driven = mode == "tick";
+        uint64_t elapsed_ms = 0;
+        if (rtc_tick_driven && core) {
+            int32_t frequency = core->frequency(core);
+            int32_t frame_cycles = core->frameCycles(core);
+            if (frequency <= 0 || frame_cycles <= 0) return false;
+            elapsed_ms = static_cast<uint64_t>(core->frameCounter(core)) *
+                static_cast<uint64_t>(frame_cycles) * 1000ULL /
+                static_cast<uint64_t>(frequency);
+        }
+        if (elapsed_ms > epoch_ms) return false;
+        rtc_requested_epoch_ms = static_cast<int64_t>(epoch_ms);
+        rtc_epoch_ms = static_cast<int64_t>(epoch_ms - elapsed_ms);
+        configure_rtc();
+        return true;
+    }
+
+    bool reset() {
+        if (!core) return false;
+        core->opts.skipBios = skip_bios;
+        core->reset(core);
+        if (!skip_bios) apply_real_hw_reset();
+        rtc_epoch_ms = rtc_requested_epoch_ms;
+        core->setKeys(core, 0);
+        configure_rtc();
+        frame_calls = 0;
+        video_frame_ends = 0;
+        key_reads = 0;
+        inst_count = 0;
+        audio.clear_samples();
+        save_import_active = false;
+        save_import.clear();
+        save_import_expected = 0;
+        save_import_received = 0;
+        save_export_active = false;
+        save_export.clear();
+        return true;
+    }
+
+    bool import_save() {
+        if (!core || !save_import_active ||
+            save_import_received != save_import_expected) return false;
+        VFile* vf = VFileMemChunk(save_import.data(), save_import.size());
+        if (!vf) return false;
+        if (!core->loadSave(core, vf)) {
+            vf->close(vf);
+            return false;
+        }
+        save_import_active = false;
+        save_import.clear();
+        save_import_expected = 0;
+        save_import_received = 0;
+        save_export.clear();
+        save_export_active = false;
+        return true;
+    }
+
+    bool begin_save_export() {
+        if (!core) return false;
+        void* bytes = nullptr;
+        std::size_t size = core->savedataClone(core, &bytes);
+        if (size > kMaxSaveBytes) { std::free(bytes); return false; }
+        save_export.clear();
+        if (size) {
+            if (!bytes) return false;
+            auto* data = static_cast<uint8_t*>(bytes);
+            save_export.assign(data, data + size);
+            std::free(bytes);
+        }
+        save_export_active = true;
+        return true;
+    }
+
+    bool save_emulator_state() {
+        if (!core) return false;
+        const std::size_t size = core->stateSize(core);
+        if (size == 0 || size > kMaxEmulatorStateBytes) return false;
+        std::vector<uint8_t> next;
+        try {
+            next.resize(size);
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+        if (!core->saveState(core, next.data())) return false;
+        emulator_state.swap(next);
+        ++emulator_state_sequence;
+        if (emulator_state_sequence == 0) ++emulator_state_sequence;
+        emulator_state_id = emulator_state_sequence;
+        return true;
+    }
+
+    bool load_emulator_state(uint64_t state_id) {
+        if (!core || state_id == 0 || state_id != emulator_state_id ||
+            emulator_state.empty() ||
+            emulator_state.size() != core->stateSize(core)) return false;
+        return core->loadState(core, emulator_state.data());
+    }
 
     // Drive mGBA's post-reset CPU state to match real ARM7TDMI
     // hardware conventions (ARM ARM A2.6.5): PC=0, mode=Supervisor,
@@ -240,6 +523,11 @@ struct Oracle {
             return false;
         }
         mCoreInitConfig(core, nullptr);
+        mCoreCallbacks callbacks{};
+        callbacks.context = this;
+        callbacks.videoFrameEnded = &Oracle::frame_ended;
+        callbacks.keysRead = &Oracle::keys_read;
+        core->addCoreCallbacks(core, &callbacks);
 
         if (bios_path && *bios_path) {
             VFile* vf = VFileOpen(bios_path, O_RDONLY);
@@ -253,18 +541,11 @@ struct Oracle {
             }
         }
         if (rom_path && *rom_path) {
-            // mCoreLoadFile derives the directory set from the ROM path
-            // (baseName/dirs.save), then we autoload "<rom>.sav" with the
-            // standard mGBA helper (frontends do this; a raw loadROM call
-            // does neither). Needed for save/load-flow comparisons.
+            // mCoreLoadFile may derive a sibling save path. Never autoload it:
+            // save import/export is explicit and process-local below.
             if (!mCoreLoadFile(core, rom_path)) {
                 std::fprintf(stderr, "oracle: loadROM %s failed\n", rom_path);
                 return false;
-            }
-            if (!mCoreAutoloadSave(core)) {
-                std::fprintf(stderr,
-                    "oracle: no save autoloaded for %s (continuing)\n",
-                    rom_path);
             }
         }
 
@@ -273,6 +554,11 @@ struct Oracle {
         // skips rendering work entirely.
         unsigned w = 0, h = 0;
         core->desiredVideoDimensions(core, &w, &h);
+        if (!w || !h || w > 512 || h > 512 ||
+            static_cast<uint64_t>(w) * h > 512 * 512) {
+            std::fprintf(stderr, "oracle: unsupported video dimensions %ux%u\n", w, h);
+            return false;
+        }
         video_buf.assign(static_cast<std::size_t>(w) * h, 0);
         core->setVideoBuffer(core, video_buf.data(), w);
 
@@ -280,11 +566,12 @@ struct Oracle {
         // canonical post-BIOS handoff state. Do not overwrite that state with
         // apply_real_hw_reset(): doing so put PC back at zero in mGBA's HLE
         // BIOS image, so the old --no-bios comparison never reached the game.
-        const bool skip_bios =
+        skip_bios =
             (!bios_path || !*bios_path) && rom_path && *rom_path;
         core->opts.skipBios = skip_bios;
         core->reset(core);
         if (!skip_bios) apply_real_hw_reset();
+        configure_rtc();
         core->setAVStream(core, &audio.stream);
         audio.clear_samples();
         std::printf("oracle: mGBA core ready (bios=%s rom=%s video=%ux%u) "
@@ -304,12 +591,11 @@ struct Oracle {
         }
     }
 
-    // One PPU frame: equivalent to "step to next VBlank end and wrap".
+    // One mCore::runFrame call. This call count is not a VBlank IRQ count.
     void step_frame() {
         if (!core) return;
         core->runFrame(core);
-        ++vblanks;
-        ++frame;
+        ++frame_calls;
     }
 
     // Read `len` bytes starting at `base + off` via the bus. Returns
@@ -360,6 +646,7 @@ void cmd_read_region(Oracle& o, std::string_view req,
         emit_error(out, "missing addr/len");
         return;
     }
+    if (len > 4096) { emit_error(out, "read length exceeds 4096-byte limit"); return; }
     // Allow callers to pass either a region-relative offset or the
     // absolute bus address — both are convenient.
     uint64_t off = (addr >= base) ? addr - base : addr;
@@ -385,12 +672,22 @@ void cmd_read_region(Oracle& o, std::string_view req,
 void cmd_audio_samples(Oracle& o, std::string_view req, std::string& out) {
     uint64_t max_samples = 4096;
     uint64_t parsed = 0;
-    if (extract_uint(req, "\"max\"", parsed) ||
-        extract_uint(req, "\"count\"", parsed) ||
-        extract_uint(req, "\"samples\"", parsed)) {
-        max_samples = parsed;
+    bool has_max = field_exists(req, "\"max\"");
+    bool has_count = field_exists(req, "\"count\"");
+    bool has_samples = field_exists(req, "\"samples\"");
+    if ((static_cast<unsigned>(has_max) + static_cast<unsigned>(has_count) +
+         static_cast<unsigned>(has_samples)) > 1) {
+        emit_error(out, "specify only one audio sample count field"); return;
     }
-    if (max_samples > 16384) max_samples = 16384;
+    if ((has_max && !extract_uint(req, "\"max\"", parsed)) ||
+        (has_count && !extract_uint(req, "\"count\"", parsed)) ||
+        (has_samples && !extract_uint(req, "\"samples\"", parsed))) {
+        emit_error(out, "invalid audio sample count"); return;
+    }
+    if (has_max || has_count || has_samples) max_samples = parsed;
+    if (max_samples > 16384) {
+        emit_error(out, "audio sample count exceeds 16384-sample limit"); return;
+    }
 
     std::vector<int16_t> samples =
         o.audio.drain(static_cast<std::size_t>(max_samples));
@@ -404,11 +701,12 @@ void cmd_audio_samples(Oracle& o, std::string_view req, std::string& out) {
     char hdr[160];
     std::snprintf(hdr, sizeof(hdr),
                   "{\"ok\":true,\"rate\":%u,\"count\":%llu,"
-                  "\"samples_generated\":%llu,\"data\":",
+                  "\"samples_generated\":%llu,\"samples_dropped\":%llu,\"data\":",
                   static_cast<unsigned>(o.audio.sample_rate),
                   static_cast<unsigned long long>(samples.size()),
                   static_cast<unsigned long long>(
-                      o.audio.samples_generated));
+                      o.audio.samples_generated),
+                  static_cast<unsigned long long>(o.audio.samples_dropped));
     out = hdr;
     json_emit_hex(out, bytes.data(), bytes.size());
     out += "}";
@@ -417,20 +715,207 @@ void cmd_audio_samples(Oracle& o, std::string_view req, std::string& out) {
 void dispatch(Oracle& o, std::string_view req, std::string& out) {
     out.clear();
 
-    auto starts = [&](std::string_view tok) {
-        return req.find(tok) != std::string_view::npos;
-    };
-
-    if (starts("\"ping\"") || req == "ping") {
+    if (req == "ping") {
         out = "{\"ok\":true,\"who\":\"gbarecomp_oracle\"}";
         return;
     }
-    if (starts("\"frame\"") || req == "frame") {
-        emit_ok_int(out, "frame", o.frame);
+    if (req == "frame") {
+        emit_ok_int(out, "frame", o.frame_calls);
+        return;
+    }
+    JsonObject fields;
+    std::vector<std::string> field_order;
+    if (!parse_json_object(req, fields, &field_order) || field_order.empty()) {
+        emit_error(out, "malformed JSON object");
+        return;
+    }
+    std::string command = field_order.front();
+    auto command_field = fields.find("cmd");
+    if (command_field != fields.end()) {
+        if (command_field->second.kind != JsonField::Kind::String ||
+            command_field->second.value.empty()) {
+            emit_error(out, "cmd must be a non-empty string"); return;
+        }
+        command = command_field->second.value;
+    }
+    auto starts = [&](std::string_view tok) {
+        return tok.size() >= 2 && command == tok.substr(1, tok.size() - 2);
+    };
+
+    if (starts("\"ping\"")) {
+        out = "{\"ok\":true,\"who\":\"gbarecomp_oracle\"}";
+        return;
+    }
+    if (starts("\"frame\"")) {
+        emit_ok_int(out, "frame", o.frame_calls);
+        return;
+    }
+    if (starts("\"emu_capabilities\"")) {
+        char body[512];
+        std::snprintf(body, sizeof(body),
+            "{\"ok\":true,\"protocol\":2,\"oracle\":\"gbarecomp_oracle\","
+            "\"mgba\":\"%s\",\"mgba_commit\":\"%s\","
+            "\"reset_modes\":[\"bios\",\"hle\"],"
+            "\"rtc_modes\":[\"fixed\",\"tick\"],\"positive_key_mask\":1023,"
+            "\"max_request_bytes\":8192,\"max_memory_read_bytes\":4096,"
+            "\"max_audio_capture_samples\":16384,\"max_frame_batch\":%llu,"
+            "\"max_audio_queue_samples\":%llu,\"max_save_bytes\":%llu,"
+            "\"save_chunk_bytes\":%llu,\"max_emulator_state_bytes\":%llu,"
+            "\"emulator_state_slots\":1,\"state_api\":\"mcore-in-memory-single-slot-v1\"}",
+            MGBA_ORACLE_VERSION, MGBA_ORACLE_COMMIT,
+            static_cast<unsigned long long>(Oracle::kMaxFrameBatch),
+            static_cast<unsigned long long>(OracleAudioTap::kMaxQueuedSamples),
+            static_cast<unsigned long long>(Oracle::kMaxSaveBytes),
+            static_cast<unsigned long long>(Oracle::kSaveChunkBytes),
+            static_cast<unsigned long long>(Oracle::kMaxEmulatorStateBytes));
+        out = body;
+        return;
+    }
+    if (starts("\"emu_phase\"")) {
+        char body[384];
+        uint32_t vcount = o.core ? o.core->busRead16(o.core, Oracle::kBaseIO + 6) : 0;
+        uint32_t core_frame = o.core ? o.core->frameCounter(o.core) : 0;
+        uint32_t keys = o.core ? o.core->getKeys(o.core) : 0;
+        std::snprintf(body, sizeof(body),
+            "{\"ok\":true,\"run_frame_calls\":%llu,\"core_frame_counter\":%u,"
+            "\"video_frame_end_events\":%llu,\"key_reads\":%llu,\"keys_pressed\":%u,"
+            "\"vcount\":%u,\"reset_mode\":\"%s\"}",
+            static_cast<unsigned long long>(o.frame_calls), core_frame,
+            static_cast<unsigned long long>(o.video_frame_ends),
+            static_cast<unsigned long long>(o.key_reads), keys, vcount,
+            o.skip_bios ? "hle" : "bios");
+        out = body;
+        return;
+    }
+    if (starts("\"emu_state_save\"")) {
+        if (!o.save_emulator_state()) {
+            emit_error(out, "mGBA state save failed or exceeded the 4 MiB limit");
+            return;
+        }
+        char body[128];
+        std::snprintf(body, sizeof(body),
+            "{\"ok\":true,\"state_id\":%llu,\"size\":%llu}",
+            static_cast<unsigned long long>(o.emulator_state_id),
+            static_cast<unsigned long long>(o.emulator_state.size()));
+        out = body;
+        return;
+    }
+    if (starts("\"emu_state_load\"")) {
+        uint64_t state_id = 0;
+        if (!extract_uint(req, "\"state_id\"", state_id)) {
+            emit_error(out, "missing/invalid state_id");
+            return;
+        }
+        if (!o.load_emulator_state(state_id)) {
+            emit_error(out, "state_id is unavailable or mGBA state load failed");
+            return;
+        }
+        out = "{\"ok\":true}";
+        return;
+    }
+    if (starts("\"emu_rtc_state\"")) {
+        uint64_t rtc_seconds = o.core && o.core->rtc.d.unixTime ?
+            static_cast<uint64_t>(o.core->rtc.d.unixTime(&o.core->rtc.d)) : 0;
+        char body[256];
+        std::snprintf(body, sizeof(body),
+            "{\"ok\":true,\"mode\":\"%s\",\"epoch_seconds\":%llu,"
+            "\"core_frame_counter\":%u,\"run_frame_calls\":%llu}",
+            o.rtc_tick_driven ? "tick" : "fixed",
+            static_cast<unsigned long long>(rtc_seconds),
+            o.core ? o.core->frameCounter(o.core) : 0,
+            static_cast<unsigned long long>(o.frame_calls));
+        out = body;
+        return;
+    }
+    if (starts("\"emu_set_rtc\"")) {
+        std::string mode;
+        uint64_t epoch_ms = 0;
+        if (!extract_string(req, "\"mode\"", mode) ||
+            !extract_uint(req, "\"epoch_ms\"", epoch_ms)) {
+            emit_error(out, "missing/invalid mode or epoch_ms"); return;
+        }
+        if (!o.set_rtc(mode, epoch_ms)) {
+            emit_error(out, "unsupported RTC mode or epoch"); return;
+        }
+        out = "{\"ok\":true}";
+        return;
+    }
+    if (starts("\"emu_save_import_begin\"")) {
+        uint64_t size = 0;
+        if (!extract_uint(req, "\"size\"", size)) {
+            emit_error(out, "missing save size"); return;
+        }
+        if (size != 512 && size != 8192 && size != 32768 &&
+            size != 65536 && size != 131072) {
+            emit_error(out, "unsupported cartridge save size"); return;
+        }
+        o.save_import.assign(static_cast<std::size_t>(size), 0xFF);
+        o.save_import_expected = static_cast<std::size_t>(size);
+        o.save_import_received = 0;
+        o.save_import_active = true;
+        o.save_export.clear();
+        o.save_export_active = false;
+        emit_ok_int(out, "import_size", size);
+        return;
+    }
+    if (starts("\"emu_save_import_chunk\"")) {
+        uint64_t offset = 0;
+        std::vector<uint8_t> bytes;
+        if (!extract_uint(req, "\"offset\"", offset) ||
+            !extract_hex_bytes(req, "\"data\"", bytes)) {
+            emit_error(out, "missing/invalid import offset or data"); return;
+        }
+        if (!o.save_import_active || bytes.empty() ||
+            bytes.size() > Oracle::kSaveChunkBytes ||
+            offset != o.save_import_received ||
+            o.save_import_received > o.save_import_expected ||
+            bytes.size() > o.save_import_expected - o.save_import_received) {
+            emit_error(out, "invalid import chunk sequence"); return;
+        }
+        std::copy(bytes.begin(), bytes.end(), o.save_import.begin() +
+                  static_cast<std::ptrdiff_t>(o.save_import_received));
+        o.save_import_received += bytes.size();
+        emit_ok_int(out, "next_offset", o.save_import_received);
+        return;
+    }
+    if (starts("\"emu_save_import_commit\"")) {
+        if (!o.import_save()) { emit_error(out, "save import incomplete or failed"); return; }
+        out = "{\"ok\":true}";
+        return;
+    }
+    if (starts("\"emu_save_export_begin\"")) {
+        if (!o.begin_save_export()) { emit_error(out, "save export failed"); return; }
+        char body[160];
+        std::snprintf(body, sizeof(body),
+            "{\"ok\":true,\"size\":%llu,\"chunk_bytes\":%llu,\"format\":\"raw-cartridge-save\"}",
+            static_cast<unsigned long long>(o.save_export.size()),
+            static_cast<unsigned long long>(Oracle::kSaveChunkBytes));
+        out = body;
+        return;
+    }
+    if (starts("\"emu_save_export_chunk\"")) {
+        uint64_t offset = 0, count = 0;
+        if (!extract_uint(req, "\"offset\"", offset) ||
+            !extract_uint(req, "\"count\"", count)) {
+            emit_error(out, "missing export offset or count"); return;
+        }
+        if (!o.save_export_active || !count || count > Oracle::kSaveChunkBytes ||
+            offset > o.save_export.size() || count > o.save_export.size() - offset) {
+            emit_error(out, "invalid export chunk range"); return;
+        }
+        out = "{\"ok\":true,\"offset\":" + std::to_string(offset) + ",\"data\":";
+        json_emit_hex(out, o.save_export.data() + offset, static_cast<std::size_t>(count));
+        out += "}";
+        return;
+    }
+    if (starts("\"emu_save_export_end\"")) {
+        o.save_export.clear();
+        o.save_export_active = false;
+        out = "{\"ok\":true}";
         return;
     }
     if (starts("\"emu_vblank_count\"")) {
-        emit_ok_int(out, "vblanks", o.vblanks);
+        emit_error(out, "deprecated; use emu_phase for distinct frame observations");
         return;
     }
     if (starts("\"emu_step_inst\"")) {
@@ -450,11 +935,11 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
         body.reserve(512);
         char hdr[160];
         std::snprintf(hdr, sizeof(hdr),
-            "{\"ok\":true,\"pc\":%u,\"thumb\":%s,\"frame\":%llu,"
+            "{\"ok\":true,\"pc\":%u,\"thumb\":%s,\"run_frame_calls\":%llu,"
             "\"cycles\":%llu,\"cycles_elapsed\":%llu",
             static_cast<unsigned>(pc),
             thumb ? "true" : "false",
-            static_cast<unsigned long long>(o.frame),
+            static_cast<unsigned long long>(o.frame_calls),
             static_cast<unsigned long long>(step_cycles),
             static_cast<unsigned long long>(after_cycles));
         body = hdr;
@@ -477,12 +962,16 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
     if (starts("\"emu_run_until_pc\"")) {
         if (!o.core) { emit_error(out, "no core"); return; }
         uint64_t target = 0;
-        uint64_t max_steps = 10'000'000;
+        uint64_t max_steps = 1'000'000;
         if (!extract_uint(req, "\"target\"", target)) {
             emit_error(out, "missing target");
             return;
         }
-        extract_uint(req, "\"max_steps\"", max_steps);
+        if (field_exists(req, "\"max_steps\"") &&
+            !extract_uint(req, "\"max_steps\"", max_steps)) {
+            emit_error(out, "invalid max_steps"); return;
+        }
+        if (target > UINT32_MAX || max_steps > 1'000'000) { emit_error(out, "target or max_steps exceeds limit"); return; }
         for (uint64_t i = 0; i <= max_steps; ++i) {
             int32_t raw_pc = 0, cpsr = 0;
             o.core->readRegister(o.core, "r15", &raw_pc);
@@ -521,10 +1010,10 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
     if (starts("\"emu_find_dma_source_reset\"")) {
         if (!o.core) { emit_error(out, "no core"); return; }
         uint64_t channel_arg = 2;
-        uint64_t max_steps = 5'000'000;
-        extract_uint(req, "\"channel\"", channel_arg);
-        extract_uint(req, "\"max_steps\"", max_steps);
-        if (channel_arg > 3 || max_steps == 0) {
+        uint64_t max_steps = 1'000'000;
+        if ((field_exists(req, "\"channel\"") && !extract_uint(req, "\"channel\"", channel_arg)) ||
+            (field_exists(req, "\"max_steps\"") && !extract_uint(req, "\"max_steps\"", max_steps)) ||
+            channel_arg > 3 || max_steps == 0 || max_steps > 1'000'000) {
             emit_error(out, "invalid channel/max_steps");
             return;
         }
@@ -575,29 +1064,25 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
     }
     if (starts("\"emu_step_frames\"")) {
         uint64_t count = 0;
-        if (!extract_uint(req, "\"count\"", count) || count > 10'000'000) {
+        if (!extract_uint(req, "\"count\"", count) || count > Oracle::kMaxFrameBatch) {
             emit_error(out, "invalid count");
             return;
         }
         for (uint64_t i = 0; i < count; ++i) o.step_frame();
-        emit_ok_int(out, "frame", o.frame);
+        out = "{\"ok\":true,\"run_frame_calls\":" + std::to_string(o.frame_calls) +
+              ",\"frame\":" + std::to_string(o.frame_calls) + "}";
         return;
     }
     if (starts("\"emu_step\"") || starts("\"emu_step_to_vblank\"")) {
         o.step_frame();
-        emit_ok_int(out, "frame", o.frame);
+        out = "{\"ok\":true,\"run_frame_calls\":" + std::to_string(o.frame_calls) +
+              ",\"frame\":" + std::to_string(o.frame_calls) + "}";
         return;
     }
     if (starts("\"emu_reset\"")) {
-        if (o.core) {
-            o.core->reset(o.core);
-            o.apply_real_hw_reset();
-        }
-        o.vblanks    = 0;
-        o.frame      = 0;
-        o.inst_count = 0;
-        o.audio.clear_samples();
-        out = "{\"ok\":true}";
+        if (!o.reset()) { emit_error(out, "reset failed"); return; }
+        out = std::string("{\"ok\":true,\"reset_mode\":\"") +
+            (o.skip_bios ? "hle" : "bios") + "\"}";
         return;
     }
     if (starts("\"read_emu_oam\"")) {
@@ -871,7 +1356,7 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
         const void* px = nullptr;
         std::size_t stride = 0;  // pixels per row
         o.core->getPixels(o.core, &px, &stride);
-        if (!px) {
+        if (!px || stride < 240) {
             emit_error(out, "no framebuffer (mGBA not rendering)");
             return;
         }
@@ -919,10 +1404,12 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
     if (starts("\"emu_set_keys\"")) {
         if (!o.core) { emit_error(out, "no core"); return; }
         uint64_t keys = 0;
-        extract_uint(req, "\"keys\"", keys) ||
-            extract_uint(req, "\"value\"", keys);
+        if (!extract_uint(req, "\"keys\"", keys)) {
+            emit_error(out, "missing/invalid positive pressed-key mask"); return;
+        }
+        if (keys > 0x3FF) { emit_error(out, "pressed-key mask exceeds 10 GBA keys"); return; }
         o.core->setKeys(o.core, static_cast<uint32_t>(keys));
-        emit_ok_int(out, "keys", keys);
+        emit_ok_int(out, "keys_pressed", keys);
         return;
     }
 
@@ -938,8 +1425,20 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
             emit_error(out, "missing/odd data");
             return;
         }
+        if (bytes.empty() || bytes.size() > 2048 || addr > UINT32_MAX ||
+            bytes.size() - 1 > UINT32_MAX - addr) {
+            emit_error(out, "write address/data exceeds limits"); return;
+        }
         uint64_t width = 8;
-        extract_uint(req, "\"width\"", width);
+        if (field_exists(req, "\"width\"") &&
+            !extract_uint(req, "\"width\"", width)) {
+            emit_error(out, "invalid write width"); return;
+        }
+        if ((width != 8 && width != 16 && width != 32) ||
+            (width == 16 && (addr & 1)) || (width == 32 && (addr & 3)) ||
+            (width == 16 && bytes.size() % 2) || (width == 32 && bytes.size() % 4)) {
+            emit_error(out, "unsupported or misaligned write width/data"); return;
+        }
         uint32_t a = static_cast<uint32_t>(addr);
         if (width == 16 && (bytes.size() % 2) == 0) {
             for (std::size_t i = 0; i < bytes.size(); i += 2) {
@@ -955,7 +1454,7 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
                     (static_cast<uint32_t>(bytes[i + 3]) << 24);
                 o.core->busWrite32(o.core, a + static_cast<uint32_t>(i), v);
             }
-        } else {
+        } else if (width == 8) {
             for (std::size_t i = 0; i < bytes.size(); ++i) {
                 o.core->busWrite8(o.core, a + static_cast<uint32_t>(i),
                                   bytes[i]);
@@ -971,20 +1470,33 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
         // bank) is correct before the GPRs land; r15 last so the PC
         // sticks after any bank swap. Only keys that are present are
         // written, so a partial reg set is allowed.
-        uint64_t v = 0;
-        if (extract_uint(req, "\"cpsr\"", v)) {
-            int32_t cpsr = static_cast<int32_t>(v);
-            o.core->writeRegister(o.core, "cpsr", &cpsr);
+        uint64_t values[17]{};
+        bool present[17]{};
+        if (field_exists(req, "\"cpsr\"")) {
+            if (!extract_uint(req, "\"cpsr\"", values[0]) || values[0] > UINT32_MAX) {
+                emit_error(out, "invalid cpsr"); return;
+            }
+            present[0] = true;
         }
         for (int i = 0; i <= 15; ++i) {
             char key[12];
             std::snprintf(key, sizeof(key), "\"r%d\"", i);
-            if (extract_uint(req, key, v)) {
-                int32_t rv = static_cast<int32_t>(v);
-                char name[8];
-                std::snprintf(name, sizeof(name), "r%d", i);
-                o.core->writeRegister(o.core, name, &rv);
+            if (field_exists(req, key)) {
+                if (!extract_uint(req, key, values[i + 1]) || values[i + 1] > UINT32_MAX) {
+                    emit_error(out, "invalid register value"); return;
+                }
+                present[i + 1] = true;
             }
+        }
+        if (present[0]) {
+            int32_t cpsr = static_cast<int32_t>(values[0]);
+            o.core->writeRegister(o.core, "cpsr", &cpsr);
+        }
+        for (int i = 0; i <= 15; ++i) if (present[i + 1]) {
+            int32_t rv = static_cast<int32_t>(values[i + 1]);
+            char name[8];
+            std::snprintf(name, sizeof(name), "r%d", i);
+            o.core->writeRegister(o.core, name, &rv);
         }
         out = "{\"ok\":true}";
         return;
@@ -1002,7 +1514,42 @@ void dispatch(Oracle& o, std::string_view req, std::string& out) {
 // Line-delimited TCP server
 // ─────────────────────────────────────────────────────────────────────
 
-int run_server(Oracle& o, int port) {
+bool socket_send_all(socket_t socket, const char* data, std::size_t size) {
+    std::size_t sent_total = 0;
+    while (sent_total < size) {
+        std::size_t remaining = size - sent_total;
+#ifdef _WIN32
+        int chunk = static_cast<int>(remaining > 0x7FFFFFFF ? 0x7FFFFFFF : remaining);
+#else
+        std::size_t chunk = remaining;
+#endif
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags |= MSG_NOSIGNAL;
+#endif
+        int sent = ::send(socket, data + sent_total, chunk, flags);
+        if (sent <= 0) return false;
+        sent_total += static_cast<std::size_t>(sent);
+    }
+    return true;
+}
+
+void set_socket_deadlines(socket_t socket) {
+#ifdef _WIN32
+    DWORD timeout_ms = 30000;
+    ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+    ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO,
+                 reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+#else
+    timeval timeout{};
+    timeout.tv_sec = 30;
+    ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+}
+
+int run_server(Oracle& o, int port, const char* bind_address) {
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -1022,18 +1569,28 @@ int run_server(Oracle& o, int port) {
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (!bind_address || std::strcmp(bind_address, "127.0.0.1") == 0) {
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    } else if (std::strcmp(bind_address, "0.0.0.0") == 0) {
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else {
+        std::fprintf(stderr, "oracle: unsupported bind address %s\n", bind_address);
+        CLOSESOCK(srv);
+        return 1;
+    }
     addr.sin_port = htons(static_cast<uint16_t>(port));
     if (::bind(srv, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        std::fprintf(stderr, "oracle: bind to 127.0.0.1:%d failed\n", port);
+        std::fprintf(stderr, "oracle: bind to %s:%d failed\n", bind_address, port);
+        CLOSESOCK(srv);
         return 1;
     }
     if (::listen(srv, 1) != 0) {
         std::fprintf(stderr, "oracle: listen failed\n");
+        CLOSESOCK(srv);
         return 1;
     }
 
-    std::printf("oracle: listening on 127.0.0.1:%d\n", port);
+    std::printf("oracle: listening on %s:%d\n", bind_address, port);
     std::fflush(stdout);
 
     bool quit_server = false;
@@ -1042,6 +1599,7 @@ int run_server(Oracle& o, int port) {
         socklen_t clen = sizeof(cli);
         socket_t c = ::accept(srv, reinterpret_cast<sockaddr*>(&cli), &clen);
         if (c == INVALID_SOCKET) continue;
+        set_socket_deadlines(c);
 
         std::string inbuf;
         std::string resp;
@@ -1053,14 +1611,19 @@ int run_server(Oracle& o, int port) {
             inbuf.append(rbuf, rbuf + n);
             std::size_t newline;
             while ((newline = inbuf.find('\n')) != std::string::npos) {
+                if (newline > 8192) {
+                    static const char err[] = "{\"ok\":false,\"error\":\"line too long\"}\n";
+                    socket_send_all(c, err, sizeof(err) - 1);
+                    client_done = true;
+                    break;
+                }
                 std::string_view line(inbuf.data(), newline);
                 // Strip trailing \r if present.
                 if (!line.empty() && line.back() == '\r')
                     line.remove_suffix(1);
                 dispatch(o, line, resp);
                 resp.push_back('\n');
-                if (::send(c, resp.data(),
-                           static_cast<int>(resp.size()), 0) < 0) {
+                if (!socket_send_all(c, resp.data(), resp.size())) {
                     client_done = true;
                     break;
                 }
@@ -1071,10 +1634,10 @@ int run_server(Oracle& o, int port) {
                 }
                 inbuf.erase(0, newline + 1);
             }
-            if (inbuf.size() > 8192) {
+            if (!client_done && inbuf.size() > 8192) {
                 // Protocol cap from TCP.md.
-                std::string err = "{\"ok\":false,\"error\":\"line too long\"}\n";
-                ::send(c, err.data(), static_cast<int>(err.size()), 0);
+                static const char err[] = "{\"ok\":false,\"error\":\"line too long\"}\n";
+                socket_send_all(c, err, sizeof(err) - 1);
                 break;
             }
         }
@@ -1091,33 +1654,103 @@ int run_server(Oracle& o, int port) {
 struct Args {
     std::string bios = "bios/gba_bios.bin";
     std::string rom;
+    std::string bind_address = "127.0.0.1";
+    std::string rtc_mode = "fixed";
+    uint64_t rtc_epoch_ms = 946684800000ULL;
     int         port = 19843;
+    bool no_bios = false;
+    bool bios_set = false;
+    bool show_help = false;
+    bool show_version = false;
 };
 
-Args parse_args(int argc, char** argv) {
-    Args a;
+bool parse_u64_arg(const char* text, uint64_t& value) {
+    if (!text || !*text || *text == '-') return false;
+    errno = 0;
+    char* end = nullptr;
+    unsigned long long parsed = std::strtoull(text, &end, 10);
+    if (errno || !end || *end) return false;
+    value = static_cast<uint64_t>(parsed);
+    return true;
+}
+
+bool parse_args(int argc, char** argv, Args& a, std::string& error) {
     for (int i = 1; i < argc; ++i) {
         std::string_view s = argv[i];
-        if (s == "--bios" && i + 1 < argc) { a.bios = argv[++i]; continue; }
-        if (s == "--no-bios") { a.bios.clear(); continue; }
-        if (s == "--rom"  && i + 1 < argc) { a.rom  = argv[++i]; continue; }
-        if (s == "--port" && i + 1 < argc) { a.port = std::atoi(argv[++i]); continue; }
-        std::fprintf(stderr, "oracle: unknown arg %.*s\n",
-                     static_cast<int>(s.size()), s.data());
+        if (s == "--help") { a.show_help = true; continue; }
+        if (s == "--version") { a.show_version = true; continue; }
+        if (s == "--no-bios") {
+            if (a.bios_set) { error = "--bios and --no-bios are mutually exclusive"; return false; }
+            a.no_bios = true; a.bios.clear(); continue;
+        }
+        if (s == "--bios" || s == "--rom" || s == "--bind" ||
+            s == "--port" || s == "--rtc-mode" || s == "--rtc-epoch-ms") {
+            if (i + 1 >= argc) { error = "missing value for " + std::string(s); return false; }
+            const char* value = argv[++i];
+            if (!value || !*value) { error = "empty value for " + std::string(s); return false; }
+            if (s == "--bios") {
+                if (a.no_bios) { error = "--bios and --no-bios are mutually exclusive"; return false; }
+                a.bios = value; a.bios_set = true;
+            } else if (s == "--rom") a.rom = value;
+            else if (s == "--bind") {
+                a.bind_address = value;
+                if (a.bind_address != "127.0.0.1" && a.bind_address != "0.0.0.0") {
+                    error = "--bind must be 127.0.0.1 or 0.0.0.0"; return false;
+                }
+            } else if (s == "--port") {
+                uint64_t port = 0;
+                if (!parse_u64_arg(value, port) || !port || port > 65535) {
+                    error = "--port must be in 1..65535"; return false;
+                }
+                a.port = static_cast<int>(port);
+            } else if (s == "--rtc-mode") {
+                a.rtc_mode = value;
+                if (a.rtc_mode != "fixed" && a.rtc_mode != "tick") {
+                    error = "--rtc-mode must be fixed or tick"; return false;
+                }
+            } else {
+                if (!parse_u64_arg(value, a.rtc_epoch_ms) ||
+                    a.rtc_epoch_ms > 253402300799000ULL) {
+                    error = "--rtc-epoch-ms is outside the supported range"; return false;
+                }
+            }
+            continue;
+        }
+        error = "unknown argument: " + std::string(s);
+        return false;
     }
-    return a;
+    return true;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    Args args = parse_args(argc, argv);
+    mLogSetDefaultLogger(&g_oracle_logger);
+    Args args;
+    std::string error;
+    if (!parse_args(argc, argv, args, error)) {
+        std::fprintf(stderr, "oracle: %s\n", error.c_str());
+        return 2;
+    }
+    if (args.show_help) {
+        std::puts("gbarecomp_oracle [--rom FILE] [--bios FILE|--no-bios] [--port N] [--bind 127.0.0.1|0.0.0.0] [--rtc-mode fixed|tick] [--rtc-epoch-ms N]");
+        return 0;
+    }
+    if (args.show_version) {
+        std::printf("gbarecomp_oracle protocol=2 mGBA=%s commit=%s\n",
+                    MGBA_ORACLE_VERSION, MGBA_ORACLE_COMMIT);
+        return 0;
+    }
     Oracle o;
+    if (!o.set_rtc(args.rtc_mode, args.rtc_epoch_ms)) {
+        std::fprintf(stderr, "oracle: invalid RTC configuration\n");
+        return 2;
+    }
     if (!o.init(args.bios.empty() ? nullptr : args.bios.c_str(),
                 args.rom.empty() ? nullptr : args.rom.c_str())) {
         return 1;
     }
-    int rc = run_server(o, args.port);
+    int rc = run_server(o, args.port, args.bind_address.c_str());
     o.shutdown();
     return rc;
 }

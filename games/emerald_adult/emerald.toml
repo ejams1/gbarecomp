@@ -1,0 +1,144 @@
+# Hand-maintained shared recompiler/runtime config for the Modern Emerald ROM.
+# Generated symbol metadata is passed as a later --config overlay and never
+# overwrites this file.
+
+[program]
+name = "Pokemon Modern Emerald (USA)"
+id = "pokemon_modern_emerald"
+load_address = 0x08000000
+size = 0x02000000
+entry_pc = 0x08000000
+static_resume_all = true
+
+[identity]
+sha1 = "57d3561262bf5337293a2d31f6b79b5879f7cff7"
+
+# The vector at 0x08000000 is the ARM reset entry. IntrMain is an assembly IRQ
+# dispatch root with ELF STT_NOTYPE, so it is explicitly seeded here.
+[[extra_func]]
+addr = 0x08000250
+mode = "arm"
+name = "IntrMain"
+note = "ELF map/objdump verified IRQ dispatch root; ELF type is NOTYPE"
+
+# The ROM's options_plus_menu DrawTopBarText switch uses an absolute Thumb
+# jump table at 0x08BD196C. These six entries are the verified case blocks
+# (cmp #5 at 0x082079C4); seed them as interior resumes so an indirect case
+# branch stays in translated code instead of bridging as a false subroutine.
+[[extra_func]]
+addr = 0x08207A8E
+mode = "thumb"
+resume = true
+note = "DrawTopBarText switch case 0; target from verified ROM table 0x08BD196C"
+
+[[extra_func]]
+addr = 0x08207AC4
+mode = "thumb"
+resume = true
+note = "DrawTopBarText switch case 1; target from verified ROM table 0x08BD196C"
+
+[[extra_func]]
+addr = 0x08207AC8
+mode = "thumb"
+resume = true
+note = "DrawTopBarText switch case 2; target from verified ROM table 0x08BD196C"
+
+[[extra_func]]
+addr = 0x08207ACC
+mode = "thumb"
+resume = true
+note = "DrawTopBarText switch case 3; target from verified ROM table 0x08BD196C"
+
+[[extra_func]]
+addr = 0x082079D0
+mode = "thumb"
+resume = true
+note = "DrawTopBarText switch case 4; target from verified ROM table 0x08BD196C"
+
+[[extra_func]]
+addr = 0x08207A4A
+mode = "thumb"
+resume = true
+note = "DrawTopBarText switch case 5; target from verified ROM table 0x08BD196C"
+
+# Task_NamingScreen is called through an absolute Thumb jump table at
+# 0x088C00E4 (cmp #9 at 0x081599E4). Seed all ten interior case entries so
+# state transitions in the rival-name screen stay in translated code.
+[[extra_func]]
+addr = 0x08159A5E
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 0; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x08159A6E
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 1; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x081599F4
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 2; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x081599F0
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 3; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x08159A00
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 4; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x08159A06
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 5; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x08159A0C
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 6; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x08159A12
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 7; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x08159A32
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 8; target from verified ROM table 0x088C00E4"
+
+[[extra_func]]
+addr = 0x08159A50
+mode = "thumb"
+resume = true
+note = "Task_NamingScreen switch case 9; target from verified ROM table 0x088C00E4"
+
+[game]
+short_name = "Pokemon Modern Emerald"
+default_region = "USA"
+
+[rom]
+path = "../../../pokeemerald-modern-adult/pokeemerald_modern.gba"
+sha1 = "57d3561262bf5337293a2d31f6b79b5879f7cff7"
+
+[bios]
+path = "../../bios/gba_bios.bin"
+sha1 = "300c20df6731a33952ded8c436f7f186d25d3492"
+hle = false
+
+[save]
+path = "local/saves/pokemon-modern-emerald.sav"
+type = "flash1m"
+size = 0x20000
+
