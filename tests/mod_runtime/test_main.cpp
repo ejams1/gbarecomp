@@ -198,6 +198,12 @@ int main() {
     }
     const std::string foreign_asset_sha1 =
         gba::sha1(foreign_asset.data(), foreign_asset.size()).hex();
+    const std::string packaged_video_payload = "video-frame-and-pcm-payload";
+    if (!write_text(package / "video_frames_audio.bin", packaged_video_payload))
+        return fail("could not write packaged video/audio fixture");
+    const std::string packaged_video_sha1 = gba::sha1(
+        reinterpret_cast<const uint8_t*>(packaged_video_payload.data()),
+        packaged_video_payload.size()).hex();
     if (!write_text(wrong_asset_path, "wrong-owned"))
         return fail("could not write wrong required foreign asset");
     const std::string manifest =
@@ -242,7 +248,14 @@ int main() {
         "sha1 = \"" + foreign_asset_sha1 + "\"\n"
         "size = " + std::to_string(foreign_asset.size()) + "\n"
         "extensions = [\"nes\"]\n"
-        "purpose = \"Used only by this trusted foreign-world feature.\"\n";
+        "purpose = \"Used only by this trusted foreign-world feature.\"\n\n"
+        "[[package_asset]]\n"
+        "feature = \"adaptive-view\"\n"
+        "id = \"coast-video\"\n"
+        "path = \"video_frames_audio.bin\"\n"
+        "sha1 = \"" + packaged_video_sha1 + "\"\n"
+        "size = " + std::to_string(packaged_video_payload.size()) + "\n"
+        "purpose = \"Neutral test video frames and PCM audio.\"\n";
     if (!write_text(package / "manifest.toml", manifest))
         return fail("could not write manifest");
 
@@ -390,7 +403,8 @@ int main() {
     gbarecomp::mod_runtime_activate_plugins();
     if (g_active || gba_mod_diagnostic_replay_enabled() != -1 ||
         gba_mod_adaptive_view_enabled() ||
-        gba_mod_required_asset_path("test.adaptive-view", "zelda1-rom"))
+        gba_mod_required_asset_path("test.adaptive-view", "zelda1-rom") ||
+        gba_mod_required_asset_path("test.adaptive-view", "coast-video"))
         return fail("unrelated feature required or exposed a foreign asset");
 
     // Headless/noninteractive commits must refuse an absent asset rather than
@@ -529,6 +543,16 @@ int main() {
     if (!resolved || fs::path(resolved) != foreign_asset_path ||
         fs::exists(package / "zelda1.nes"))
         return fail("required asset was not exposed as an external validated path");
+    const char* packaged_video = gba_mod_required_asset_path(
+        "test.adaptive-view", "coast-video");
+    if (!packaged_video || fs::path(packaged_video) !=
+            package / "video_frames_audio.bin")
+        return fail("committed packaged video/audio was not resolved from the package");
+    if (!write_text(package / "video_frames_audio.bin", "tampered after commit") ||
+        gba_mod_required_asset_path("test.adaptive-view", "coast-video") ||
+        !write_text(package / "video_frames_audio.bin", packaged_video_payload) ||
+        !gba_mod_required_asset_path("test.adaptive-view", "coast-video"))
+        return fail("committed package asset resolver did not recheck tampered bytes");
 
     // Only the committed plugin can replace the PPU-owned presentation
     // pointer. Its address is not copied or transformed by the runtime.
@@ -871,6 +895,22 @@ int main() {
     if (gbarecomp::mod_runtime_initialize(mods, "test-game", "nope", &error) ||
         gbarecomp::mod_runtime_committed_cheat_count() != 0)
         return fail("failed initialize retained committed cheats");
+
+    if (!write_text(package / "video_frames_audio.bin", "corrupt video"))
+        return fail("could not corrupt packaged video fixture for negative test");
+    if (gbarecomp::mod_runtime_initialize(mods, "test-game", sha1, &error) ||
+        gba_mod_required_asset_path("test.adaptive-view", "coast-video"))
+        return fail("wrong-hash packaged video was accepted or exposed");
+    std::string traversal_manifest = manifest;
+    const std::string safe_path = "path = \"video_frames_audio.bin\"";
+    const size_t safe_path_at = traversal_manifest.find(safe_path);
+    if (safe_path_at == std::string::npos)
+        return fail("could not locate packaged video path in fixture manifest");
+    traversal_manifest.replace(safe_path_at, safe_path.size(),
+                               "path = \"../outside.bin\"");
+    if (!write_text(package / "manifest.toml", traversal_manifest) ||
+        gbarecomp::mod_runtime_initialize(mods, "test-game", sha1, &error))
+        return fail("path-traversing packaged video declaration was accepted");
 
     fs::remove_all(sandbox, ec);
     std::cout << "GBA mod runtime: target gate, strict external asset, "

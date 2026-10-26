@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gbarecomp.local/schemas/host-snapshot-v1.json",
+  "title": "Emerald Adult build-specific host snapshot metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scenario", "identity", "environment", "snapshot", "expected_state", "interfaces"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source_path", "source_sha256", "source_schema_version", "host_input_replay"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "source_path": {"type": "string", "minLength": 1},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "source_schema_version": {"type": "integer", "minimum": 1},
+        "host_input_replay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "sha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rom_sha1", "bios_sha1", "host_sha256", "framework_commit", "game_commit"],
+      "properties": {
+        "rom_sha1": {"$ref": "#/$defs/sha1"},
+        "bios_sha1": {"$ref": "#/$defs/sha1"},
+        "host_sha256": {"$ref": "#/$defs/sha256"},
+        "framework_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+        "game_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rtc_epoch", "rng_policy"],
+      "properties": {
+        "rtc_epoch": {"type": "integer"},
+        "rng_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["local_path", "sha256", "bytes", "format"],
+      "properties": {
+        "local_path": {"type": "string", "pattern": "^games/emerald_adult/local/"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "format": {"const": "gbarecomp-machine-state"}
+      }
+    },
+    "expected_state": {
+      "type": "object",
+      "required": ["map", "position", "flags", "party", "game_time"],
+      "properties": {
+        "map": {"type": "object"},
+        "position": {"type": "object"},
+        "flags": {"type": "array", "items": {"type": "string"}},
+        "party": {"type": "array", "items": {"type": "object"}},
+        "game_time": {"type": ["object", "string", "integer"]},
+        "rng_state": {"type": ["object", "string", "integer", "null"]}
+      }
+    },
+    "interfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["native_load", "cartridge_save"],
+      "properties": {
+        "native_load": {"const": "--load-state <path>"},
+        "cartridge_save": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "$defs": {
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

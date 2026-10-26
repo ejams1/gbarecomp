@@ -24,7 +24,7 @@
 extern "C" {
 #endif
 
-#define GBA_OVERLAY_ABI_VERSION 6u
+#define GBA_OVERLAY_ABI_VERSION 7u
 
 typedef struct GbaOverlayCallbacks {
     uint32_t abi_version;  // must equal GBA_OVERLAY_ABI_VERSION
@@ -110,6 +110,10 @@ typedef struct GbaOverlayCallbacks {
     uint32_t (*runtime_exception_return_refill)(uint32_t target_pc);
     uint32_t (*runtime_prefetch_stall_delta)(uint32_t wait, uint32_t pc,
                                              uint32_t thumb);
+
+    // ABI v7: split function entries need the live continuation PC when a
+    // RAM-resident body resumes at an interior instruction boundary.
+    uint32_t* runtime_resume_pc;
 } GbaOverlayCallbacks;
 
 // Exported by every overlay DLL:

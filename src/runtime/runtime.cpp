@@ -168,6 +168,7 @@ struct Args {
     int frames = -1;
     int scale = 3;
     int tcp_port = 0;
+    bool tcp_bind_any_interface = false;
     bool steps_set = false;
     bool frames_set = false;
     bool window_set = false;
@@ -840,7 +841,7 @@ bool apply_toml_file(const std::filesystem::path& path, Args* args,
 constexpr std::string_view kCliValueFlags[] = {
     "--config",      "--bios",          "--rom",           "--bios-sha1",
     "--rom-sha1",    "--rom-crc32",     "--steps",         "--frames",
-    "--scale",       "--tcp",           "--tcp-observe",   "--dump-bmp",
+    "--scale",       "--tcp",           "--tcp-bind",      "--tcp-observe",   "--dump-bmp",
     "--dump-png",    "--load-state",    "--dump-state",    "--view-width",    "--widescreen",
     "--save",        "--save-path",     "--gyro-sensitivity",
     "--sharp-filter", "--linear-filter", "--affine-filter", "--internal-resolution", "--screen",
@@ -997,6 +998,19 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
                 return false;
             }
             args->quiet = true;
+            continue;
+        }
+        if (s == "--tcp-bind") {
+            const char* value = need_value("--tcp-bind");
+            if (!value) return false;
+            if (std::strcmp(value, "127.0.0.1") == 0) {
+                args->tcp_bind_any_interface = false;
+            } else if (std::strcmp(value, "0.0.0.0") == 0) {
+                args->tcp_bind_any_interface = true;
+            } else {
+                if (err) *err = "--tcp-bind must be 127.0.0.1 or 0.0.0.0";
+                return false;
+            }
             continue;
         }
         if (s == "--dump-bmp") {
@@ -1223,6 +1237,10 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
         if (err) *err = "unknown argument " + s;
         return false;
     }
+    if (args->tcp_bind_any_interface && args->tcp_port <= 0) {
+        if (err) *err = "--tcp-bind 0.0.0.0 requires --tcp";
+        return false;
+    }
     return true;
 }
 
@@ -1385,6 +1403,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     g_runtime_bus_read_override = nullptr;
     Args args;
 
+    if (opts.default_game_config_path && *opts.default_game_config_path) {
+        args.config = opts.default_game_config_path;
+    }
+
     // Seed built-in defaults from the caller (the per-game runner).
     // CLI / TOML can still override these.
     if (opts.builtin_game_name && *opts.builtin_game_name) {
@@ -1483,6 +1505,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                                 ? gba::GbaBios::kExpectedSha1
                                 : args.bios_sha1.c_str();
         spec.expected_crc32 = args.bios_crc32;
+        spec.hash_mismatch_is_error = opts.strict_bios_sha1;
         auto r = resolve_asset(args.bios, spec, argv[0]);
         if (!r.ok) {
             std::fprintf(stderr,
@@ -1514,6 +1537,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         spec.expected_size  = 0;  // GBA ROMs vary in size; SHA-1 covers it
         spec.expected_sha1  = args.rom_sha1.c_str();
         spec.expected_crc32 = args.rom_crc32;
+        spec.hash_mismatch_is_error = opts.strict_rom_sha1;
         auto r = resolve_asset(args.rom, spec, argv[0]);
         if (!r.ok) {
             std::fprintf(stderr,
@@ -1621,17 +1645,22 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     if (mods_ready) {
         if (!mod_runtime_commit(args.rom, &err)) {
             std::fprintf(stderr,
-                         "[gbarecomp:runtime] cannot launch with selected "
-                         "mods: %s\n", err.c_str());
-            return 1;
+                         "[gbarecomp:runtime] selected mods were rejected; "
+                         "continuing with ROM fallback: %s\n", err.c_str());
+            // A stale, wrong-target, or otherwise invalid persisted mod
+            // selection must never make the underlying game unlaunchable.
+            // The failed commit has cleared the committed asset/capability
+            // set, and plugins are not activated on this path.
+            mods_ready = false;
+        } else {
+            mod_runtime_activate_plugins();
+            if (!args.internal_resolution_set && gba_mod_internal_resolution() > 0)
+                args.internal_resolution = gba_mod_internal_resolution();
+            // Retain catalog defaults unless the title exposes and the player
+            // explicitly selects a Display view mode.
+            if (mod_controls_view)
+                args.resize_view = gba_mod_adaptive_view_enabled() != 0;
         }
-        mod_runtime_activate_plugins();
-        if (!args.internal_resolution_set && gba_mod_internal_resolution() > 0)
-            args.internal_resolution = gba_mod_internal_resolution();
-        // Retain catalog defaults unless the title exposes and the player
-        // explicitly selects a Display view mode.
-        if (mod_controls_view)
-            args.resize_view = gba_mod_adaptive_view_enabled() != 0;
     }
 #endif
     // Declarative mod cheats ([[cheat]] records of enabled features). They
@@ -1917,12 +1946,14 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     g_runtime_observed_pc_count = static_cast<unsigned>(
         bus.audio().shadow_hook_pcs(g_runtime_observed_pcs,
                                     RUNTIME_MAX_OBSERVED_PCS));
-    g_runtime_dispatch_observer = g_runtime_observed_pc_count
-        ? [](uint32_t pc, int thumb) {
-              if (gba::GbaBus* b = gbarecomp::active_bus())
-                  b->audio().shadow_driver_tick(pc, thumb != 0);
-          }
-        : nullptr;
+    if (g_runtime_observed_pc_count) {
+        g_runtime_dispatch_observer = [](uint32_t pc, int thumb) {
+            if (gba::GbaBus* b = gbarecomp::active_bus())
+                b->audio().shadow_driver_tick(pc, thumb != 0);
+        };
+    } else {
+        g_runtime_dispatch_observer = nullptr;
+    }
     if (!args.quiet && bus.matrix().active()) {
         std::printf(
             "matrix_mapper=active physical_size=%zu aperture=%zu page_size=%zu\n",
@@ -2862,7 +2893,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         ctx.cycles_elapsed = reinterpret_cast<uint64_t*>(&g_runtime_cycles);
         ctx.last_step_cycles = &last_step_cycles;
         ctx.sync_frames = &vblank_count;
-        bool ok = server.run(args.tcp_port, ctx);
+        bool ok = server.run(args.tcp_port, ctx,
+            args.tcp_bind_any_interface
+                ? debug::TcpDebugServer::BindAddress::AnyInterface
+                : debug::TcpDebugServer::BindAddress::Loopback);
         // Server returned (client sent `quit`). Stop the game thread. If it is
         // wedged in a freeze it will not observe RS_QUIT until the frame returns
         // (it never will) — but a clean quit is always issued while parked, so
@@ -3578,6 +3612,24 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     const char* input_replay_env = std::getenv("GBARECOMP_INPUT_REPLAY");
     const bool input_record_requested = input_record_env && input_record_env[0];
     const bool input_replay_requested = input_replay_env && input_replay_env[0];
+    const char* input_replay_clock_env =
+        std::getenv("GBARECOMP_INPUT_REPLAY_CLOCK");
+    const bool input_replay_vblank_clock = input_replay_clock_env &&
+        std::strcmp(input_replay_clock_env, "vblank") == 0;
+    if (input_replay_clock_env && input_replay_clock_env[0] &&
+        std::strcmp(input_replay_clock_env, "ppu") != 0 &&
+        !input_replay_vblank_clock) {
+        std::fprintf(stderr,
+                     "[gbarecomp:runtime] GBARECOMP_INPUT_REPLAY_CLOCK must be ppu or vblank\n");
+        runtime_shutdown();
+        return 1;
+    }
+    if (input_replay_vblank_clock && !input_replay_requested) {
+        std::fprintf(stderr,
+                     "[gbarecomp:runtime] VBlank replay clock requires GBARECOMP_INPUT_REPLAY\n");
+        runtime_shutdown();
+        return 1;
+    }
     if (input_record_requested && input_replay_requested) {
         std::fprintf(stderr,
                      "[gbarecomp:runtime] GBARECOMP_INPUT_RECORD and "
@@ -3646,15 +3698,25 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             return 1;
         }
         if (!args.quiet)
-            std::printf("input_replay=ENABLED path=\"%s\" events=%zu\n",
+            std::printf("input_replay=ENABLED clock=%s path=\"%s\" events=%zu\n",
+                        input_replay_vblank_clock ? "vblank" : "ppu",
                         input_replay_env, input_replay_events.size());
     } else if (!args.quiet) {
         std::printf("input_replay=DISABLED\n");
     }
 
+    auto input_replay_frame = [&]() -> uint64_t {
+        if (!input_replay_vblank_clock) return ppu.frame_count();
+        // mGBA runFrame returns at VBlank-start. frame_count() advances at
+        // scanline wrap, so account for the in-progress VBlank when making
+        // the frame-indexed replay clock match that boundary. This is also
+        // derivable after GBAS restore; the runtime VBlank counter is not.
+        return static_cast<uint64_t>(ppu.frame_count()) +
+               (ppu.vcount() >= gba::GbaPpu::kLinesVisible ? 1u : 0u);
+    };
     auto apply_input_replay = [&]() {
         if (!input_replay_requested) return;
-        const uint64_t frame = ppu.frame_count();
+        const uint64_t frame = input_replay_frame();
         while (input_replay_index + 1 < input_replay_events.size() &&
                input_replay_events[input_replay_index + 1].frame <= frame) {
             ++input_replay_index;
@@ -3663,6 +3725,14 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             bus.io().set_keyinput(
                 input_replay_events[input_replay_index].keyinput);
     };
+    if (input_replay_vblank_clock) {
+        // Match the oracle's set-keys-between-runFrame-calls contract at the
+        // VBlank-start boundary, before the guest services that frame's IRQ.
+        runtime_set_vblank_input_hook([&]() {
+            if (opts.input_frame) run_touch_policy();
+            apply_input_replay();
+        });
+    }
 
     // Optional monotonic-pump Assist action script for automated validation.
     // It exercises the same runtime save/load, fast-forward, and rewind paths
@@ -4753,6 +4823,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     // more frames past the restored frame counter instead of breaking on the
     // first step when the loaded index already exceeds the cap.
     const uint64_t headless_base_frame = ppu.frame_count();
+    const uint64_t headless_base_clock = input_replay_vblank_clock
+        ? input_replay_frame() : headless_base_frame;
     // Passive bounded headless runs need no per-frame host work. Keep their
     // guest call stack intact just like windowed play and unwind only after the
     // requested final VBlank. Emerald's IRQ-driven SoundMainRAM mixer is a
@@ -4760,19 +4832,28 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     // PC every frame eventually corrupts its mixer state, while resuming in
     // place follows the hardware control flow.
     //
-    // Demo input, input replay, TCP debugging, and widescreen sidecar runs
-    // still require the outer loop at each frame boundary.
-    const bool passive_headless_present_in_place =
+    // Demo input, TCP debugging, and widescreen sidecar runs still require
+    // the outer loop at each frame boundary. A frame-indexed replay can run
+    // in place when its input is advanced from this same VBlank hook.
+    const bool headless_present_in_place =
         !args.window && args.frames >= 0 && args.tcp_port <= 0 &&
-        !demo_input && !input_replay_requested && present_in_place &&
+        !demo_input && present_in_place &&
         !diag.playing();
-    if (passive_headless_present_in_place) {
+    if (headless_present_in_place) {
         std::fprintf(stderr, "[gbarecomp:runtime] headless present-in-place ON "
-                     "(unwind at final frame only; "
+                     "(frame-boundary replay; unwind at final frame only; "
                      "GBARECOMP_PRESENT_IN_PLACE=0 to disable)\n");
         runtime_set_frame_present_hook([&]() -> bool {
-            return ppu.frame_count() - headless_base_frame >=
-                   static_cast<uint64_t>(args.frames);
+            if (input_replay_requested && !input_replay_vblank_clock)
+                apply_input_replay();
+            const uint64_t current_clock = input_replay_vblank_clock
+                ? input_replay_frame() : ppu.frame_count();
+            if (current_clock - headless_base_clock >=
+                static_cast<uint64_t>(args.frames)) {
+                host_quit = true;
+                return true;
+            }
+            return false;
         });
     }
 

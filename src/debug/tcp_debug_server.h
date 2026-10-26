@@ -37,6 +37,10 @@ namespace gbarecomp::debug {
 
 class TcpDebugServer {
 public:
+    enum class BindAddress {
+        Loopback,
+        AnyInterface,
+    };
     // Callback the server invokes when the client sends `step`. The
     // host runs one PPU frame and updates its own counters; returns
     // false if the run terminated abnormally (e.g. NotImplemented).
@@ -102,7 +106,8 @@ public:
     // Bind 127.0.0.1:port, accept one client, dispatch commands until
     // the client closes or sends `quit`. Blocking. Returns once done.
     // Returns true on clean exit, false if listen/bind/accept failed.
-    bool run(int port, const Context& ctx);
+    bool run(int port, const Context& ctx,
+             BindAddress bind_address = BindAddress::Loopback);
 
     // Thread-safe: make a run() blocked on another thread return promptly
     // (closes the listening and any client socket). Used by the windowed
