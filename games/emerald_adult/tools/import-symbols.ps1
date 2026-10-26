@@ -38,20 +38,21 @@ if ($mapSha256 -ne $ExpectedMapSha256.ToLowerInvariant()) {
 
 $imageId = (& docker image inspect --format '{{.Id}}' $DockerImage 2>$null)
 if ($LASTEXITCODE -ne 0 -or -not $imageId) {
-    throw "Docker image '$DockerImage' is not available. Build it using the game's docs/build-notes.md instructions."
+    $exitCode = if ($LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+    Write-Host "Docker image '$DockerImage' is not available. Build it using the game's docs/build-notes.md instructions." -ForegroundColor Red
+    exit $exitCode
 }
 
 # Keep readelf output capture inside the pinned Linux container. PowerShell
 # redirection can change the output encoding and obscure the native exit code.
-$capture = @'
-set -eu
-arm-none-eabi-readelf -sW pokeemerald_modern.elf > /host/symbols/readelf-symbols.txt
-arm-none-eabi-readelf -SW pokeemerald_modern.elf > /host/symbols/readelf-sections.txt
-'@
-& docker run --rm -v "${gameRoot}:/game" -v "${hostRoot}:/host" `
+$capture = "arm-none-eabi-readelf -sW pokeemerald_modern.elf > /host/symbols/readelf-symbols.txt && arm-none-eabi-readelf -SW pokeemerald_modern.elf > /host/symbols/readelf-sections.txt"
+& docker run --rm --mount "type=bind,source=$gameRoot,target=/game" `
+    --mount "type=bind,source=$hostRoot,target=/host" `
     -w /game $DockerImage sh -c $capture
 if ($LASTEXITCODE -ne 0) {
-    throw "ELF metadata capture failed in '$DockerImage' (exit $LASTEXITCODE)."
+    $exitCode = $LASTEXITCODE
+    Write-Host "ELF metadata capture failed in '$DockerImage' (exit $exitCode)." -ForegroundColor Red
+    exit $exitCode
 }
 
 $importer = Join-Path $frameworkRoot "tools/symbol_import/import_decomp_symbols.py"
@@ -65,7 +66,9 @@ $importer = Join-Path $frameworkRoot "tools/symbol_import/import_decomp_symbols.
     --out $symbolsDir `
     --data-source auto
 if ($LASTEXITCODE -ne 0) {
-    throw "Symbol import failed (exit $LASTEXITCODE). Review warnings before proceeding."
+    $exitCode = $LASTEXITCODE
+    Write-Host "Symbol import failed (exit $exitCode). Review warnings before proceeding." -ForegroundColor Red
+    exit $exitCode
 }
 
 $outputs = @(
