@@ -34,9 +34,8 @@ struct AssetSpec {
     const char* expected_sha1 = nullptr;
     // Expected CRC32 (IEEE 802.3). 0 = no check.
     std::uint32_t expected_crc32 = 0;
-    // Existing ROM/BIOS callers deliberately warn for an unknown revision.
-    // Package-declared foreign assets are different: their bytes are part of
-    // the feature contract, so a hash mismatch must reject the selection.
+    // Default callers warn for an unknown revision. Exact-image games and
+    // package-declared assets can reject hash mismatches instead.
     bool hash_mismatch_is_error = false;
     // Most assets cache their picker result beside the executable. A mod
     // asset instead persists its path in mods/state.toml; do not create a
