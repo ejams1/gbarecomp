@@ -25,6 +25,34 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml")
         "Hand-maintained emerald.toml is missing; it pins the ROM, BIOS, save "
         "configuration, entry root, and identity.")
 endif()
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml" _emerald_config_text)
+string(FIND "${_emerald_config_text}" "[identity]" _identity_start)
+string(FIND "${_emerald_config_text}" "[rom]" _rom_start)
+string(FIND "${_emerald_config_text}" "[bios]" _bios_start)
+if(_identity_start LESS 0 OR _rom_start LESS _identity_start OR _bios_start LESS _rom_start)
+    message(FATAL_ERROR "emerald.toml must define [identity], [rom], and [bios] sections in order.")
+endif()
+math(EXPR _identity_length "${_rom_start} - ${_identity_start}")
+math(EXPR _rom_length "${_bios_start} - ${_rom_start}")
+string(SUBSTRING "${_emerald_config_text}" ${_identity_start} ${_identity_length} _identity_section)
+string(SUBSTRING "${_emerald_config_text}" ${_rom_start} ${_rom_length} _rom_section)
+string(REGEX MATCH "sha1[ \t]*=[ \t]*\"([0-9A-Fa-f]+)\"" _identity_sha1_match "${_identity_section}")
+set(_emerald_identity_sha1 "${CMAKE_MATCH_1}")
+string(REGEX MATCH "sha1[ \t]*=[ \t]*\"([0-9A-Fa-f]+)\"" _rom_sha1_match "${_rom_section}")
+set(_emerald_rom_sha1 "${CMAKE_MATCH_1}")
+string(LENGTH "${_emerald_identity_sha1}" _identity_sha1_length)
+string(LENGTH "${_emerald_rom_sha1}" _rom_sha1_length)
+if(NOT _identity_sha1_length EQUAL 40 OR NOT _rom_sha1_length EQUAL 40 OR
+   NOT _emerald_identity_sha1 MATCHES "^[0-9A-Fa-f]+$" OR
+   NOT _emerald_rom_sha1 MATCHES "^[0-9A-Fa-f]+$" OR
+   NOT _emerald_identity_sha1 STREQUAL _emerald_rom_sha1)
+    message(FATAL_ERROR
+        "emerald.toml [identity].sha1 and [rom].sha1 must contain the same 40-digit ROM SHA-1.")
+endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/host_scene_state_address.h")
+    message(FATAL_ERROR
+        "Imported scene-state address is missing. Run build-exe.ps1 so the matching ELF data-symbol table can generate it.")
+endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/symbols/POKEMON_MODERN_EMERALD_symbols.toml")
     message(FATAL_ERROR
         "Imported fork symbols are missing. Run tools/import-symbols.ps1 "
@@ -34,6 +62,10 @@ endif()
 # The recompiler CLI is bootstrapped separately before this game project is
 # configured. This host build consumes generated BIOS and cartridge files from
 # separate, ignored output directories.
+# The scene observer uses the existing trusted-plugin activation and immutable
+# presentation APIs. Keep framework support enabled even without a package so
+# registration stays inert and package absence preserves the ROM view.
+set(GBARECOMP_ENABLE_MODS ON CACHE BOOL "" FORCE)
 add_subdirectory("${GBARECOMP_ROOT}" "${CMAKE_BINARY_DIR}/gbarecomp")
 
 get_target_property(_runtime_compile_definitions gbarecomp_runtime
@@ -90,8 +122,11 @@ gbarecomp_add_runtime_target(EmeraldAdultHost
 # before the static runtime archives are scanned by traditional linkers.
 target_sources(EmeraldAdultHost PRIVATE
     src/main.cpp
+    src/scene_media_observer.cpp
     "${_bios_cpp}"
     "${_bios_dispatch}")
+target_compile_definitions(EmeraldAdultHost PRIVATE
+    GBARECOMP_EMERALD_ROM_SHA1=\"${_emerald_identity_sha1}\")
 
 # The shared helper currently wires executable shards, the dispatch table,
 # and PC symbols. Include the optional data-name table emitted for --data-symbols.
