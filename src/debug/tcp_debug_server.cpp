@@ -1245,7 +1245,8 @@ void dispatch(const TcpDebugServer::Context& ctx, std::string_view req,
 TcpDebugServer::TcpDebugServer()  = default;
 TcpDebugServer::~TcpDebugServer() = default;
 
-bool TcpDebugServer::run(int port, const Context& ctx) {
+bool TcpDebugServer::run(int port, const Context& ctx,
+                         BindAddress bind_address) {
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -1265,10 +1266,13 @@ bool TcpDebugServer::run(int port, const Context& ctx) {
 
     sockaddr_in a{};
     a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_addr.s_addr = htonl(bind_address == BindAddress::Loopback
+                                  ? INADDR_LOOPBACK : INADDR_ANY);
     a.sin_port = htons(static_cast<uint16_t>(port));
     if (::bind(srv, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0) {
-        std::fprintf(stderr, "tcp_debug_server: bind 127.0.0.1:%d failed\n", port);
+        std::fprintf(stderr, "tcp_debug_server: bind %s:%d failed\n",
+                     bind_address == BindAddress::Loopback ? "127.0.0.1" : "0.0.0.0",
+                     port);
         CLOSESOCK(srv);
         return false;
     }
