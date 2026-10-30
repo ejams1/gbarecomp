@@ -143,6 +143,69 @@ SHA-1 values; missing files and hash mismatches stop startup with a specific
 diagnostic. The generated directories stay ignored. CMake links sharded
 cartridge code, BIOS translation and the data symbol map when present.
 
+### Optional gallery video package
+
+The native host accepts media packages built from the game repository's
+`tools/gallery/build_host_media.py` outputs. That pipeline supports source
+videos at 240x160, 160x90, and 90x160; it converts each to 240x160 BGR555LE
+frames with black bars where needed and creates mono S16 PCM matched to the
+guest VBlank timeline. The GBA fallback continues to play without host media.
+
+After generating an M5-5 output directory, create a data-only package and give
+it the license that applies to those derived outputs:
+
+```powershell
+python ./games/emerald_adult/tools/package_gallery_media.py `
+  ./pokeemerald-modern-adult/build/host-media/real-e2e/packages/neutral_coast `
+  ./pokeemerald-modern-adult/build/host-media/adult.gallery-media.gbamod `
+  --license-id PolyForm-Noncommercial-1.0.0 `
+  --license-file ./gbarecomp/LICENSE
+```
+
+In the host launcher's Mods page, install the `.gbamod`, leave the feature off
+unless desired, then select it and use **Play/Commit**. The package targets the
+`pokemon_modern_emerald` game ID and ROM SHA-1 pinned in `emerald.toml`. Its
+frame chunks, audio, and provenance manifest are verified when installed and
+when the catalog is loaded. To update media, build a new package version with
+`--version`, install it through Mods, select it, and commit again. With the
+package absent or its feature disabled, ordinary
+ROM playback remains available.
+
+### Backend parity trace
+
+The optional host media backend can be checked against canonical guest scene
+records captured by the required BIOS mGBA runner. First build the current host
+and create the meadow/coast `.gbamod` files as above. Then run
+`tools/run_host_media_trace.py` with those packages, the pinned host executable,
+ROM, BIOS, and the `m5-6-gba-baseline.json` report produced by the game-side
+`check_backend_parity.py`. The runner starts isolated headless host processes
+through the existing TCP debug interface for package enabled, disabled, absent,
+and wrong-target modes. It compares the guest scene fields, checks host frame and
+audio status, exercises a native host savestate restore, and writes a host trace
+that the game-side checker can compare using `--host-trace`.
+
+For example, with the generated host at `build-m5-3-verification` and both
+package archives under `build/host-media/m5-3-packages`:
+
+```powershell
+python ./games/emerald_adult/tools/run_host_media_trace.py `
+  --workspace-root M:/other-projects/pokemon-projects `
+  --host ./games/emerald_adult/build-m5-3-verification/EmeraldAdultHost `
+  --package-meadow ./build/host-media/m5-3-packages/neutral_meadow.gbamod `
+  --package-coast ./build/host-media/m5-3-packages/neutral_coast.gbamod `
+  --rom ../pokeemerald-modern-adult/pokeemerald_modern.gba `
+  --bios ./bios/gba_bios.bin `
+  --gba-baseline ../pokeemerald-modern-adult/tools/validation/.local/reports/m5-6-gba-baseline.json `
+  --out ./build/host-media/m5-6-host-trace.json
+```
+
+The host test uses the framework's validation-only `GBARECOMP_CHEATS` frame
+hook to replay captured 32-byte scene-state records; it does not write guest
+state through the production media plugin. The guest reference reports remain
+the authority for real scene progression, gallery unlock timing, and savedata.
+The host trace records the ROM and host executable hashes so it must be
+regenerated after either build changes.
+
 ## Generation record and observed coverage
 
 The checked-in `emerald.toml` pins ROM SHA-1

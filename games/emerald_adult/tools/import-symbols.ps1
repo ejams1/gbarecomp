@@ -2,9 +2,9 @@
 param(
     [string]$GameRepo = (Join-Path $PSScriptRoot "../../../../pokeemerald-modern-adult"),
     [string]$DockerImage = "adult-emerald-build:r63-libpng",
-    [string]$ExpectedRomSha1 = "57d3561262bf5337293a2d31f6b79b5879f7cff7",
-    [string]$ExpectedElfSha256 = "37305ee0df463968c99057aba54742265484ec449a6c26ead80f90d52f6632d1",
-    [string]$ExpectedMapSha256 = "79f0799dc6aa1bdc9920efeb2ec44d3c846f31c54155f36de245ede3da40e4cb"
+    [string]$ExpectedRomSha1 = "163b456619b89a1b167bd2d06b3527d6c9f2c131",
+    [string]$ExpectedElfSha256 = "2395133d34f8932a38573b20b0a911915fe72fe930f6e2d571ddd9e5db1153a6",
+    [string]$ExpectedMapSha256 = "ca4504978864410ac2211e651c3a407421669271cb3aa4389b1734f3703f4104"
 )
 
 $ErrorActionPreference = "Stop"

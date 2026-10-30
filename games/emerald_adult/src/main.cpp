@@ -1,8 +1,13 @@
 #include "host_window.h"
 #include "runtime.h"
+#include "scene_media_observer.h"
 
 #include <iostream>
 #include <string_view>
+
+#ifndef GBARECOMP_EMERALD_ROM_SHA1
+#error "CMake must derive the built-in ROM identity from emerald.toml"
+#endif
 
 int main(int argc, char** argv) {
     const bool smoke = argc == 2 && std::string_view(argv[1]) == "--window-smoke";
@@ -24,9 +29,11 @@ int main(int argc, char** argv) {
 
     gbarecomp::RunOptions options;
     options.builtin_game_name = "Pokemon Modern Emerald";
-    options.builtin_rom_sha1 = "57d3561262bf5337293a2d31f6b79b5879f7cff7";
+    options.builtin_rom_sha1 = GBARECOMP_EMERALD_ROM_SHA1;
+    options.mod_game_id = "pokemon_modern_emerald";
     options.default_game_config_path = GBARECOMP_DEFAULT_GAME_CONFIG;
     options.strict_bios_sha1 = true;
     options.strict_rom_sha1 = true;
+    emerald_media::configure_scene_media(options);
     return gbarecomp::run_game(argc, argv, options);
 }

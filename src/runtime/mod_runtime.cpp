@@ -55,6 +55,16 @@ bool mod_runtime_commit_impl(const fs::path& rom_path, bool allow_picker,
 
 namespace {
 
+bool safe_archive_name(const std::string& name);
+bool sha1_file(const fs::path& path, std::string& out, std::string* error);
+
+bool safe_package_asset_path(const std::string& name) {
+    if (name.find('\\') != std::string::npos ||
+        name.find(':') != std::string::npos || !safe_archive_name(name))
+        return false;
+    return true;
+}
+
 constexpr uint64_t kMaxArchiveBytes = 256ull * 1024ull * 1024ull;
 constexpr uint32_t kMaxArchiveFiles = 4096;
 
@@ -109,6 +119,16 @@ struct RequiredAsset {
     std::string purpose;
 };
 
+// Unlike [[asset]], these bytes are declared and shipped inside the archive.
+struct PackageAsset {
+    std::string feature_id;
+    std::string id;
+    std::string path;
+    std::string sha1;
+    uint64_t expected_size = 0;
+    std::string purpose;
+};
+
 // A declarative cheat: CodeBreaker Advance codes owned by one feature. The
 // codes are parsed and range-checked when the manifest is read, so a package
 // with a malformed or out-of-RAM code is rejected before anything can boot.
@@ -132,6 +152,7 @@ struct Package {
     std::vector<Feature> features;
     std::vector<Option> options;
     std::vector<RequiredAsset> required_assets;
+    std::vector<PackageAsset> package_assets;
     std::vector<CheatRecord> cheats;
 };
 
@@ -144,8 +165,7 @@ struct FeatureSelection {
 struct PackageSelection {
     std::string version;
     std::map<std::string, FeatureSelection> features;
-    // Package asset id -> absolute or user-selected local path. The source
-    // bytes stay outside the package and are never copied by this runtime.
+    // Asset id -> committed, validated path (external or package-contained).
     std::map<std::string, std::string> asset_paths;
 };
 
@@ -409,6 +429,7 @@ bool validate_option_value(const Option& option, const std::string& value,
 }
 
 bool read_manifest(const fs::path& path, Package& out, std::string* error) {
+    out.root = path.parent_path();
     std::ifstream file(path);
     if (!file) {
         set_error(error, "cannot open manifest: " + path.string());
@@ -423,6 +444,7 @@ bool read_manifest(const fs::path& path, Package& out, std::string* error) {
         Choice,
         Plugin,
         Asset,
+        PackageAsset,
         Cheat,
     };
     Section section = Section::Package;
@@ -431,6 +453,7 @@ bool read_manifest(const fs::path& path, Package& out, std::string* error) {
     Option* option = nullptr;
     Choice* choice = nullptr;
     RequiredAsset* asset = nullptr;
+    PackageAsset* package_asset = nullptr;
     CheatRecord* cheat = nullptr;
     std::string plugin_feature;
     std::string plugin_id;
@@ -470,6 +493,7 @@ bool read_manifest(const fs::path& path, Package& out, std::string* error) {
             option = nullptr;
             choice = nullptr;
             asset = nullptr;
+            package_asset = nullptr;
             cheat = nullptr;
             if (name == "target") {
                 section = Section::Target;
@@ -498,6 +522,10 @@ bool read_manifest(const fs::path& path, Package& out, std::string* error) {
                 section = Section::Asset;
                 out.required_assets.emplace_back();
                 asset = &out.required_assets.back();
+            } else if (name == "package_asset") {
+                section = Section::PackageAsset;
+                out.package_assets.emplace_back();
+                package_asset = &out.package_assets.back();
             } else if (name == "cheat") {
                 section = Section::Cheat;
                 out.cheats.emplace_back();
@@ -631,6 +659,20 @@ bool read_manifest(const fs::path& path, Package& out, std::string* error) {
                     parsed = string_field(asset->purpose);
                 } else known = false;
                 break;
+            case Section::PackageAsset:
+                package_asset = out.package_assets.empty()
+                    ? nullptr : &out.package_assets.back();
+                if (!package_asset) parsed = false;
+                else if (key == "feature") parsed = string_field(package_asset->feature_id);
+                else if (key == "id") parsed = string_field(package_asset->id);
+                else if (key == "path") parsed = string_field(package_asset->path);
+                else if (key == "sha1") parsed = string_field(package_asset->sha1);
+                else if (key == "size") {
+                    parsed = parse_int(value, int_value) && int_value > 0;
+                    if (parsed) package_asset->expected_size = static_cast<uint64_t>(int_value);
+                } else if (key == "purpose") parsed = string_field(package_asset->purpose);
+                else known = false;
+                break;
             case Section::Cheat:
                 cheat = out.cheats.empty() ? nullptr : &out.cheats.back();
                 if (!cheat) parsed = false;
@@ -702,6 +744,35 @@ bool read_manifest(const fs::path& path, Package& out, std::string* error) {
                             return !valid_extension(extension);
                         })) {
             set_error(error, "manifest has an invalid or duplicate required asset");
+            return false;
+        }
+    }
+    std::set<std::string> package_asset_ids;
+    std::set<std::string> package_asset_paths;
+    for (const PackageAsset& item : out.package_assets) {
+        if (!find_feature(out, item.feature_id) || !valid_id(item.id) ||
+            !safe_package_asset_path(item.path) || item.path == "manifest.toml" ||
+            !valid_sha1(item.sha1) || item.expected_size == 0 ||
+            item.purpose.empty() || !package_asset_ids.insert(item.id).second ||
+            !package_asset_paths.insert(item.path).second) {
+            set_error(error, "manifest has an invalid or duplicate packaged asset");
+            return false;
+        }
+        const fs::path content = out.root / fs::path(item.path);
+        std::error_code ec;
+        const fs::path canonical_root = fs::canonical(out.root, ec);
+        const fs::path canonical_content = ec ? fs::path{} : fs::canonical(content, ec);
+        const fs::path relative_content = ec ? fs::path{} :
+            canonical_content.lexically_relative(canonical_root);
+        if (ec || relative_content.empty() || *relative_content.begin() == ".." ||
+            !fs::is_regular_file(content, ec) || ec ||
+            fs::file_size(content, ec) != item.expected_size || ec) {
+            set_error(error, "packaged asset is missing or has the wrong size: " + item.path);
+            return false;
+        }
+        std::string digest;
+        if (!sha1_file(content, digest, error) || digest != item.sha1) {
+            set_error(error, "packaged asset hash mismatch: " + item.path);
             return false;
         }
     }
@@ -2117,6 +2188,12 @@ bool mod_runtime_commit_impl(const fs::path& rom_path, bool allow_picker,
             if (path != selection.asset_paths.end())
                 runtime.committed_asset_paths[package->id][asset.id] = path->second;
         }
+        for (const PackageAsset& asset : package->package_assets) {
+            const Feature* owner = find_feature(*package, asset.feature_id);
+            if (owner && feature_enabled(runtime, *package, *owner))
+                runtime.committed_asset_paths[package->id][asset.id] =
+                    (package->root / fs::path(asset.path)).string();
+        }
         for (const CheatRecord& cheat : package->cheats) {
             const Feature* owner = find_feature(*package, cheat.feature_id);
             if (owner && feature_enabled(runtime, *package, *owner))
@@ -2196,7 +2273,40 @@ const char* mod_runtime_required_asset_path(const std::string& package_id,
     const auto package = runtime.committed_asset_paths.find(package_id);
     if (package == runtime.committed_asset_paths.end()) return nullptr;
     const auto asset = package->second.find(asset_id);
-    return asset == package->second.end() ? nullptr : asset->second.c_str();
+    if (asset == package->second.end()) return nullptr;
+    std::error_code ec;
+    const fs::path committed_path(asset->second);
+    const fs::path canonical_committed = fs::canonical(committed_path, ec);
+    if (ec || !fs::is_regular_file(canonical_committed, ec) || ec) return nullptr;
+    const auto versions = runtime.packages.find(package_id);
+    if (versions == runtime.packages.end()) return nullptr;
+    for (const auto& [version, installed] : versions->second) {
+        (void)version;
+        if (!target_matches(installed, runtime)) continue;
+        for (const PackageAsset& declared : installed.package_assets) {
+            if (declared.id != asset_id) continue;
+            const fs::path declared_path = installed.root / fs::path(declared.path);
+            std::error_code path_ec;
+            if (fs::canonical(declared_path, path_ec) != canonical_committed || path_ec)
+                continue;
+            if (fs::file_size(canonical_committed, ec) != declared.expected_size || ec)
+                return nullptr;
+            std::string digest;
+            if (!sha1_file(canonical_committed, digest, nullptr) || digest != declared.sha1)
+                return nullptr;
+            return asset->second.c_str();
+        }
+        for (const RequiredAsset& declared : installed.required_assets) {
+            if (declared.id != asset_id) continue;
+            if (fs::file_size(canonical_committed, ec) != declared.expected_size || ec)
+                return nullptr;
+            std::string digest;
+            if (!sha1_file(canonical_committed, digest, nullptr) || digest != declared.sha1)
+                return nullptr;
+            return asset->second.c_str();
+        }
+    }
+    return nullptr;
 }
 
 }  // namespace gbarecomp
