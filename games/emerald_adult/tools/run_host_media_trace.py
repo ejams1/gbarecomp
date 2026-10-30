@@ -148,7 +148,13 @@ def make_container_script(executable_dir: Path, workspace: Path,
         f"--save-path /workspace/{save} --tcp {port} > host.log 2>&1 &",
         "pid=$!",
         "trap 'kill $pid 2>/dev/null || true' EXIT",
-        "sleep 2",
+        "connected=0",
+        "for attempt in $(seq 1 60); do",
+        f"  if (echo > /dev/tcp/127.0.0.1/{port}) 2>/dev/null; then connected=1; break; fi",
+        "  if ! kill -0 \"$pid\" 2>/dev/null; then cat host.log; exit 1; fi",
+        "  sleep 1",
+        "done",
+        "if [ \"$connected\" != 1 ]; then cat host.log; echo 'host debug port timed out' >&2; exit 1; fi",
         f"exec 3<>/dev/tcp/127.0.0.1/{port}",
         "send() { printf '%s\\n' \"$1\" >&3; IFS= read -r response <&3; printf '%s\\n' \"$response\"; }",
         *commands,
@@ -252,6 +258,10 @@ def main() -> int:
         expected_rom = identity["identity"]["sha1"].lower()
         if digest(rom, "sha1") != expected_rom:
             raise ValueError("host ROM does not match emerald.toml identity")
+        baseline_production_rom = baseline.get("production_rom_sha1")
+        if baseline_production_rom is not None and (
+                not isinstance(baseline_production_rom, str) or baseline_production_rom.lower() != expected_rom):
+            raise ValueError("GBA baseline production ROM does not match the host ROM")
         header = host.parent.parent / "generated" / "host_scene_state_address.h"
         if not header.is_file():
             # Per-profile hosts live at local/<profile>/build, while generated

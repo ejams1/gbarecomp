@@ -11,7 +11,7 @@ entry_pc = 0x08000000
 static_resume_all = true
 
 [identity]
-sha1 = "a3cc21dc076e5e0af690d98d0f009ca7e23e707c"
+sha1 = "c6608fa784a8755c35dceee01f288780460ebeb5"
 
 # The vector at 0x08000000 is the ARM reset entry. IntrMain is an assembly IRQ
 # dispatch root with ELF STT_NOTYPE, so it is explicitly seeded here.
@@ -22,107 +22,107 @@ name = "IntrMain"
 note = "ELF map/objdump verified IRQ dispatch root; ELF type is NOTYPE"
 
 # The ROM's options_plus_menu DrawTopBarText switch uses an absolute Thumb
-# jump table at 0x08BD196C. These six entries are the verified case blocks
-# (cmp #5 at 0x082079C4); seed them as interior resumes so an indirect case
+# jump table at 0x08C25BAC. These six entries are the verified case blocks
+# (cmp #5 at 0x0820CC14); seed them as interior resumes so an indirect case
 # branch stays in translated code instead of bridging as a false subroutine.
 [[extra_func]]
-addr = 0x08207A8E
+addr = 0x0820CCDE
 mode = "thumb"
 resume = true
-note = "DrawTopBarText switch case 0; target from verified ROM table 0x08BD196C"
+note = "DrawTopBarText switch case 0; target from verified ROM table 0x08C25BAC"
 
 [[extra_func]]
-addr = 0x08207AC4
+addr = 0x0820CD14
 mode = "thumb"
 resume = true
-note = "DrawTopBarText switch case 1; target from verified ROM table 0x08BD196C"
+note = "DrawTopBarText switch case 1; target from verified ROM table 0x08C25BAC"
 
 [[extra_func]]
-addr = 0x08207AC8
+addr = 0x0820CD18
 mode = "thumb"
 resume = true
-note = "DrawTopBarText switch case 2; target from verified ROM table 0x08BD196C"
+note = "DrawTopBarText switch case 2; target from verified ROM table 0x08C25BAC"
 
 [[extra_func]]
-addr = 0x08207ACC
+addr = 0x0820CD1C
 mode = "thumb"
 resume = true
-note = "DrawTopBarText switch case 3; target from verified ROM table 0x08BD196C"
+note = "DrawTopBarText switch case 3; target from verified ROM table 0x08C25BAC"
 
 [[extra_func]]
-addr = 0x082079D0
+addr = 0x0820CC20
 mode = "thumb"
 resume = true
-note = "DrawTopBarText switch case 4; target from verified ROM table 0x08BD196C"
+note = "DrawTopBarText switch case 4; target from verified ROM table 0x08C25BAC"
 
 [[extra_func]]
-addr = 0x08207A4A
+addr = 0x0820CC9A
 mode = "thumb"
 resume = true
-note = "DrawTopBarText switch case 5; target from verified ROM table 0x08BD196C"
+note = "DrawTopBarText switch case 5; target from verified ROM table 0x08C25BAC"
 
 # Task_NamingScreen is called through an absolute Thumb jump table at
-# 0x088C00E4 (cmp #9 at 0x081599E4). Seed all ten interior case entries so
+# 0x088DEA94 (cmp #9 at 0x0815D088). Seed all ten interior case entries so
 # state transitions in the rival-name screen stay in translated code.
 [[extra_func]]
-addr = 0x08159A5E
+addr = 0x0815D102
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 0; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 0; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x08159A6E
+addr = 0x0815D112
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 1; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 1; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x081599F4
+addr = 0x0815D098
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 2; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 2; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x081599F0
+addr = 0x0815D094
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 3; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 3; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x08159A00
+addr = 0x0815D0A4
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 4; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 4; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x08159A06
+addr = 0x0815D0AA
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 5; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 5; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x08159A0C
+addr = 0x0815D0B0
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 6; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 6; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x08159A12
+addr = 0x0815D0B6
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 7; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 7; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x08159A32
+addr = 0x0815D0D6
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 8; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 8; target from verified ROM table 0x088DEA94"
 
 [[extra_func]]
-addr = 0x08159A50
+addr = 0x0815D0F4
 mode = "thumb"
 resume = true
-note = "Task_NamingScreen switch case 9; target from verified ROM table 0x088C00E4"
+note = "Task_NamingScreen switch case 9; target from verified ROM table 0x088DEA94"
 
 [game]
 short_name = "Pokemon Modern Emerald"
@@ -130,7 +130,7 @@ default_region = "USA"
 
 [rom]
 path = "../../../pokeemerald-modern-adult/pokeemerald_modern.gba"
-sha1 = "a3cc21dc076e5e0af690d98d0f009ca7e23e707c"
+sha1 = "c6608fa784a8755c35dceee01f288780460ebeb5"
 
 [bios]
 path = "../../bios/gba_bios.bin"
