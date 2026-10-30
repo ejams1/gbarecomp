@@ -101,6 +101,31 @@ int main() {
         fs::remove_all(dir, ec);
         return 1;
     }
+    std::string once = manifest;
+    const auto loop_policy_at = once.find("\"loop_policy\":\"REPEAT\"");
+    if (loop_policy_at == std::string::npos) return 1;
+    once.replace(loop_policy_at, std::string("\"loop_policy\":\"REPEAT\"").size(),
+                 "\"loop_policy\":\"ONCE\"");
+    if (!write_text(manifest_path, once) ||
+        !package.load(manifest_path.string().c_str(), resolve, nullptr, &error) ||
+        package.loops() || package.frame_for_elapsed(2) != 1 ||
+        package.frame_for_elapsed(2, true) != 0 ||
+        package.sample_for_elapsed(2) != 2185 ||
+        package.sample_for_elapsed(2, true) != 0 ||
+        package.read_audio(2183, mixed, 4, true) != 4 ||
+        mixed[0] != 183 || mixed[1] != 184 || mixed[2] != 0 || mixed[3] != 1) {
+        std::cerr << "guest gallery loop override did not loop an ONCE package timeline: "
+                  << error << '\n';
+        fs::remove_all(dir, ec);
+        return 1;
+    }
+    if (!write_text(manifest_path, manifest) ||
+        !package.load(manifest_path.string().c_str(), resolve, nullptr, &error)) {
+        std::cerr << "repeat package did not reload after guest loop override check: "
+                  << error << '\n';
+        fs::remove_all(dir, ec);
+        return 1;
+    }
     std::string alternate = manifest;
     const auto profile_at = alternate.find("native_3_2");
     alternate.replace(profile_at, std::string("native_3_2").size(), "portrait_9_16");

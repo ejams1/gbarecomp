@@ -345,9 +345,14 @@ std::uint16_t GalleryMediaPackage::media_id(std::size_t frame_index) const {
 }
 
 std::size_t GalleryMediaPackage::frame_for_elapsed(std::uint64_t elapsed) const {
+    return frame_for_elapsed(elapsed, loops_);
+}
+
+std::size_t GalleryMediaPackage::frame_for_elapsed(std::uint64_t elapsed,
+                                                   bool loop) const {
     if (timeline_.empty() || total_vblanks_ == 0) return frames_.size();
-    std::uint64_t tick = loops_ ? elapsed % total_vblanks_
-                                : std::min<std::uint64_t>(elapsed, total_vblanks_ - 1);
+    std::uint64_t tick = loop ? elapsed % total_vblanks_
+                              : std::min<std::uint64_t>(elapsed, total_vblanks_ - 1);
     for (std::size_t i = 0; i < timeline_.size(); ++i)
         if (tick >= timeline_[i].start_vblank && tick < timeline_[i].end_vblank)
             return i;
@@ -355,9 +360,14 @@ std::size_t GalleryMediaPackage::frame_for_elapsed(std::uint64_t elapsed) const 
 }
 
 std::size_t GalleryMediaPackage::sample_for_elapsed(std::uint64_t elapsed) const {
+    return sample_for_elapsed(elapsed, loops_);
+}
+
+std::size_t GalleryMediaPackage::sample_for_elapsed(std::uint64_t elapsed,
+                                                    bool loop) const {
     if (total_samples_ == 0 || total_vblanks_ == 0) return 0;
-    const std::uint64_t tick = loops_ ? elapsed % total_vblanks_
-                                      : std::min<std::uint64_t>(elapsed, total_vblanks_);
+    const std::uint64_t tick = loop ? elapsed % total_vblanks_
+                                    : std::min<std::uint64_t>(elapsed, total_vblanks_);
     const std::uint64_t sample = (tick * kAudioRate + kGuestClock / 2) / kGuestClock;
     const std::uint64_t bounded = std::min<std::uint64_t>(sample, total_samples_);
     return static_cast<std::size_t>(bounded);

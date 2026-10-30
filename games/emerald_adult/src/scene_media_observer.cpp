@@ -6,7 +6,7 @@
 #include "runtime.h"
 #include "runtime_bus_bridge.h"
 #include "gallery_media_package.h"
-#include "../generated/host_scene_state_address.h"
+#include "host_scene_state_address.h"
 
 #include <array>
 #include <algorithm>
@@ -68,6 +68,7 @@ bool sStreamPlaying = false;
 std::atomic<std::size_t> sAudioCursor{0};
 std::atomic<std::size_t> sGuestAudioCursor{0};
 std::atomic<bool> sAudioMuted{true};
+std::atomic<bool> sGuestLooping{false};
 
 const char* resolve_package_asset(void*, const char* asset_id) {
     return gba_mod_required_asset_path("adult.gallery-media", asset_id);
@@ -80,7 +81,8 @@ std::size_t read_media_audio(void*, std::int16_t* dst, std::size_t max_frames) {
         std::fill_n(dst, max_frames, 0);
         return max_frames;
     }
-    return sMedia.read_audio(offset, dst, max_frames, sMedia.loops());
+    return sMedia.read_audio(offset, dst, max_frames,
+                             sGuestLooping.load(std::memory_order_relaxed));
 }
 
 void stop_stream() {
@@ -110,6 +112,7 @@ void reset_media() {
     sLastInvocation = 0;
     sLastElapsedVblanks = 0;
     sAudioMuted.store(true, std::memory_order_relaxed);
+    sGuestLooping.store(false, std::memory_order_relaxed);
     sAudioCursor.store(0, std::memory_order_relaxed);
     sGuestAudioCursor.store(0, std::memory_order_relaxed);
     sLastStateEpoch = ~std::uint64_t{0};
@@ -205,6 +208,7 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
         sGuestStateValid = false;
         sGuestSceneActive = false;
         sFramePublished = false;
+        sGuestLooping.store(false, std::memory_order_relaxed);
         sFallbackReason = "guest_state_invalid";
         if (sEnabled) {
             stop_stream();
@@ -219,6 +223,7 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
     sGuestSceneActive = active && (state.flags & kHostStateFrameVisible) != 0;
     if (!active || !(state.flags & kHostStateFrameVisible)) {
         sFramePublished = false;
+        sGuestLooping.store(false, std::memory_order_relaxed);
         sFallbackReason = "guest_scene_inactive";
         if (sEnabled) {
             stop_stream();
@@ -236,11 +241,12 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
     const bool guest_music_enabled =
         (state.flags & kHostStateGuestMusicEnabled) != 0;
     const bool guest_looping = (state.flags & kHostStateLooping) != 0;
+    sGuestLooping.store(guest_looping, std::memory_order_relaxed);
     if (state.scene_id != sMedia.scene_id() ||
         state.total_vblanks != sMedia.total_vblanks() ||
-        guest_looping != sMedia.loops() || state.frame_index >= sMedia.frame_count() ||
+        state.frame_index >= sMedia.frame_count() ||
         state.media_id != sMedia.media_id(state.frame_index) ||
-        sMedia.frame_for_elapsed(state.elapsed_vblanks) != state.frame_index ||
+        sMedia.frame_for_elapsed(state.elapsed_vblanks, guest_looping) != state.frame_index ||
         state.player_state > 5 ||
         state.elapsed_vblanks >= (static_cast<std::uint64_t>(state.loop_count) + 1) *
                                      state.total_vblanks) {
@@ -254,7 +260,7 @@ void observe_scene(const gbarecomp::ExtendedViewFrameInfo* frame) {
     const bool rewound = state.elapsed_vblanks < sLastElapsedVblanks;
     const bool restored = frame->state_epoch != sLastStateEpoch || rewound;
     const std::size_t audio_cursor =
-        sMedia.sample_for_elapsed(state.elapsed_vblanks);
+        sMedia.sample_for_elapsed(state.elapsed_vblanks, guest_looping);
     sAudioCursor.store(audio_cursor, std::memory_order_relaxed);
     sGuestAudioCursor.store(audio_cursor, std::memory_order_relaxed);
     sAudioMuted.store(!guest_music_enabled, std::memory_order_relaxed);

@@ -374,12 +374,12 @@ try {
 
     $smokePng = Join-Path $hostBuild "startup-smoke.png"
     Invoke-Native docker @(
-        "run", "--rm", "--mount", $mount, "-w", "/workspace/gbarecomp/games/emerald_adult",
+        "run", "--rm", "--mount", $mount, "--mount", $gameMount, "-w", "/workspace/gbarecomp/games/emerald_adult",
         "-e", "RECOMP_RTC_EPOCH=946684800",
         "-e", "GBARECOMP_INPUT_REPLAY=/workspace/gbarecomp/games/emerald_adult/tools/title-start.input.csv",
         "-e", "SDL_VIDEODRIVER=dummy", "-e", "SDL_AUDIODRIVER=dummy",
         $HostDockerImage, "./build-pipeline/EmeraldAdultHost",
-        "--no-window", "--frames", "1", "--save", "/tmp/emerald-adult-pipeline.sav",
+        "--rom", "/game/pokeemerald_modern.gba", "--no-window", "--frames", "1", "--save", "/tmp/emerald-adult-pipeline.sav",
         "--dump-png", "/workspace/gbarecomp/games/emerald_adult/build-pipeline/startup-smoke.png"
     ) "Run the deterministic one-frame startup smoke check"
     if (-not (Test-Path -LiteralPath $smokePng -PathType Leaf)) {
