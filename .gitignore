@@ -6,6 +6,7 @@ bios/*.BIN
 # Build output
 build/
 build-*/
+/.worktrees/
 games/emerald_adult/build/
 games/emerald_adult/build-pipeline/
 games/emerald_adult/local/

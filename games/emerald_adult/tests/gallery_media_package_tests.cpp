@@ -85,7 +85,9 @@ int main() {
         !package.loops() || package.media_id(1) != 0x4111 ||
         package.frame_for_elapsed(0) != 0 || package.frame_for_elapsed(1) != 1 ||
         package.frame_for_elapsed(2) != 0 || package.sample_for_elapsed(1) != 1092 ||
-        package.sample_for_elapsed(2) != 0 || !package.frame(0) ||
+        package.sample_for_elapsed(2) != 0 || package.sample_for_elapsed(4) != 0 ||
+        package.sample_for_elapsed(5) != 1092 || package.sample_for_elapsed(6) != 0 ||
+        !package.frame(0) ||
         package.frame(0)[0] != 0x001F || package.frame(1)[0] != 0x03E0) {
         std::cerr << "valid gallery video package rejected or timeline decoded incorrectly: "
                   << error << '\n';

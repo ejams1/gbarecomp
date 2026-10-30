@@ -356,10 +356,11 @@ std::size_t GalleryMediaPackage::frame_for_elapsed(std::uint64_t elapsed) const 
 
 std::size_t GalleryMediaPackage::sample_for_elapsed(std::uint64_t elapsed) const {
     if (total_samples_ == 0 || total_vblanks_ == 0) return 0;
-    std::uint64_t sample = (elapsed * kAudioRate + kGuestClock / 2) / kGuestClock;
-    if (loops_) sample %= total_samples_;
-    else sample = std::min<std::uint64_t>(sample, total_samples_);
-    return static_cast<std::size_t>(sample);
+    const std::uint64_t tick = loops_ ? elapsed % total_vblanks_
+                                      : std::min<std::uint64_t>(elapsed, total_vblanks_);
+    const std::uint64_t sample = (tick * kAudioRate + kGuestClock / 2) / kGuestClock;
+    const std::uint64_t bounded = std::min<std::uint64_t>(sample, total_samples_);
+    return static_cast<std::size_t>(bounded);
 }
 
 std::size_t GalleryMediaPackage::read_audio(std::size_t offset,
