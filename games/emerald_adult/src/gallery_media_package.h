@@ -24,7 +24,11 @@ public:
     std::uint16_t media_id(std::size_t frame_index) const;
     bool loops() const { return loops_; }
     std::size_t frame_for_elapsed(std::uint64_t elapsed_vblanks) const;
+    std::size_t frame_for_elapsed(std::uint64_t elapsed_vblanks,
+                                  bool loop) const;
     std::size_t sample_for_elapsed(std::uint64_t elapsed_vblanks) const;
+    std::size_t sample_for_elapsed(std::uint64_t elapsed_vblanks,
+                                   bool loop) const;
     std::size_t read_audio(std::size_t offset, std::int16_t* dst,
                            std::size_t count, bool loop) const;
 

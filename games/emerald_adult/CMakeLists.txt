@@ -13,6 +13,10 @@ set(GBARECOMP_GENERATED_BIOS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_bios"
     CACHE PATH "Directory containing this game's generated BIOS sources")
 set(GBARECOMP_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated"
     CACHE PATH "Directory containing this game's generated cartridge sources")
+set(GBARECOMP_EMERALD_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml"
+    CACHE FILEPATH "Matching game config for the generated cartridge")
+set(GBARECOMP_EMERALD_SYMBOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/symbols"
+    CACHE PATH "Matching imported cartridge symbol metadata")
 set(_bios_cpp "${GBARECOMP_GENERATED_BIOS_DIR}/bios_recompiled.cpp")
 set(_bios_dispatch "${GBARECOMP_GENERATED_BIOS_DIR}/bios_dispatch_table.cpp")
 if(NOT EXISTS "${_bios_cpp}" OR NOT EXISTS "${_bios_dispatch}")
@@ -20,12 +24,12 @@ if(NOT EXISTS "${_bios_cpp}" OR NOT EXISTS "${_bios_dispatch}")
         "Generated BIOS sources are missing from '${GBARECOMP_GENERATED_BIOS_DIR}'. "
         "Run gba_recompile --bios with bios/gba_bios.toml before configuring the host.")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml")
+if(NOT EXISTS "${GBARECOMP_EMERALD_CONFIG}")
     message(FATAL_ERROR
         "Hand-maintained emerald.toml is missing; it pins the ROM, BIOS, save "
         "configuration, entry root, and identity.")
 endif()
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml" _emerald_config_text)
+file(READ "${GBARECOMP_EMERALD_CONFIG}" _emerald_config_text)
 string(FIND "${_emerald_config_text}" "[identity]" _identity_start)
 string(FIND "${_emerald_config_text}" "[rom]" _rom_start)
 string(FIND "${_emerald_config_text}" "[bios]" _bios_start)
@@ -49,14 +53,21 @@ if(NOT _identity_sha1_length EQUAL 40 OR NOT _rom_sha1_length EQUAL 40 OR
     message(FATAL_ERROR
         "emerald.toml [identity].sha1 and [rom].sha1 must contain the same 40-digit ROM SHA-1.")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/host_scene_state_address.h")
+if(NOT EXISTS "${GBARECOMP_GENERATED_DIR}/host_scene_state_address.h")
     message(FATAL_ERROR
         "Imported scene-state address is missing. Run build-exe.ps1 so the matching ELF data-symbol table can generate it.")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/symbols/POKEMON_MODERN_EMERALD_symbols.toml")
+if(NOT EXISTS "${GBARECOMP_EMERALD_SYMBOLS_DIR}/POKEMON_MODERN_EMERALD_symbols.toml")
     message(FATAL_ERROR
         "Imported fork symbols are missing. Run tools/import-symbols.ps1 "
         "against the pinned ROM/ELF/map before generation.")
+endif()
+file(READ "${GBARECOMP_EMERALD_SYMBOLS_DIR}/POKEMON_MODERN_EMERALD_symbols.toml" _symbol_overlay)
+string(REGEX MATCH "sha1[ \t]*=[ \t]*\"([0-9A-Fa-f]+)\"" _symbol_sha1_match "${_symbol_overlay}")
+string(TOLOWER "${CMAKE_MATCH_1}" _symbol_sha1)
+string(TOLOWER "${_emerald_identity_sha1}" _config_sha1)
+if(NOT _symbol_sha1 STREQUAL _config_sha1)
+    message(FATAL_ERROR "Imported symbol overlay does not match the selected game config ROM identity.")
 endif()
 
 # The recompiler CLI is bootstrapped separately before this game project is
@@ -115,7 +126,7 @@ gbarecomp_add_runtime_target(EmeraldAdultHost
     GAME_GENERATED_DIR "${GBARECOMP_GENERATED_DIR}"
     DEBUG_PORT 19842
     WINDOW_TITLE "Pokemon Modern Emerald"
-    DEFAULT_GAME_CONFIG_PATH "${CMAKE_CURRENT_SOURCE_DIR}/emerald.toml")
+    DEFAULT_GAME_CONFIG_PATH "${GBARECOMP_EMERALD_CONFIG}")
 # The framework archive contains runtime_arm.cpp (which references the BIOS
 # dispatch table) and generated BIOS translation units. Attach the generated
 # BIOS objects directly to the executable so their definitions are available
@@ -128,6 +139,7 @@ target_sources(EmeraldAdultHost PRIVATE
     "${_bios_dispatch}")
 target_compile_definitions(EmeraldAdultHost PRIVATE
     GBARECOMP_EMERALD_ROM_SHA1=\"${_emerald_identity_sha1}\")
+target_include_directories(EmeraldAdultHost PRIVATE "${GBARECOMP_GENERATED_DIR}")
 
 # The shared helper currently wires executable shards, the dispatch table,
 # and PC symbols. Include the optional data-name table emitted for --data-symbols.

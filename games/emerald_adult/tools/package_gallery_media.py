@@ -25,7 +25,7 @@ def quote(value: str) -> str:
 
 
 def package(source: Path, output: Path, license_text: Path, version: str,
-            license_id: str) -> None:
+            license_id: str, config_path: Path | None = None) -> None:
     source = source.resolve()
     output = output.resolve()
     license_text = license_text.resolve()
@@ -101,10 +101,11 @@ def package(source: Path, output: Path, license_text: Path, version: str,
         raise ValueError("package exceeds runtime entry or expanded-size limits")
     if not license_id:
         raise ValueError("license identifier must not be empty")
-    config = tomllib.loads((Path(__file__).resolve().parent.parent / "emerald.toml").read_text(encoding="utf-8"))
+    config_path = config_path or Path(__file__).resolve().parent.parent / "emerald.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     game_id = config["program"]["id"]
     rom_sha1 = config["identity"]["sha1"]
-    if not re.fullmatch(r"[0-9a-f]{40}", rom_sha1):
+    if not re.fullmatch(r"[0-9a-f]{40}", rom_sha1) or config.get("rom", {}).get("sha1") != rom_sha1:
         raise ValueError("emerald.toml does not contain a valid pinned ROM SHA-1")
 
     lines = [
@@ -156,6 +157,7 @@ def main() -> int:
     parser.add_argument("--license-id", required=True,
                         help="license identifier recorded in manifest.toml")
     parser.add_argument("--version", default="1.0.0", help="package version (default: 1.0.0)")
+    parser.add_argument("--config", type=Path, help="explicit matching ROM config (default: production emerald.toml)")
     args = parser.parse_args()
     if args.output.suffix != ".gbamod":
         parser.error("output must end in .gbamod")
@@ -163,7 +165,7 @@ def main() -> int:
         parser.error("--version must use numeric major.minor.patch form")
     try:
         package(args.media_dir, args.output, args.license_file, args.version,
-                args.license_id)
+                args.license_id, args.config)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError,
             zipfile.BadZipFile) as exc:
         parser.error(str(exc))
